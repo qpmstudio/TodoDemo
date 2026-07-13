@@ -70,6 +70,7 @@ func main() {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(middleware.Auth(cfg))
 
+		r.Get("/auth/me", authHandler.Me)
 		r.Post("/auth/logout", authHandler.Logout)
 
 		r.Get("/todos", todoHandler.List)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/DevenWen/TodoDemo/internal/config"
+	"github.com/DevenWen/TodoDemo/internal/middleware"
 	"github.com/DevenWen/TodoDemo/internal/model"
 	"github.com/DevenWen/TodoDemo/internal/repository"
 	"github.com/golang-jwt/jwt/v5"
@@ -147,6 +148,17 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"message": "Logged out"})
+}
+
+// Me returns the current authenticated user.
+func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
+	userID, _ := middleware.GetUserID(r.Context())
+	user, err := repository.GetUserByID(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, model.ErrCodeNotFound, "User not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, user)
 }
 
 func (h *AuthHandler) exchangeCodeForToken(code string) (string, error) {
