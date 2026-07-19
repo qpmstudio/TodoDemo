@@ -18,6 +18,9 @@ jobs:
       - name: Deploy to K8s
         run: kubectl apply -f deploy/k8s/ -n tododemo-dev
 
+      - name: Restart Deployment
+        run: kubectl rollout restart deployment/tododemo -n tododemo-dev
+
       - name: Wait for Rollout
         run: kubectl rollout status deployment/tododemo -n tododemo-dev --timeout=120s
 
