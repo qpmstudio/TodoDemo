@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -84,6 +86,33 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	// Static file serving with SPA fallback
+	workDir, _ := os.Getwd()
+	filesDir := http.Dir(filepath.Join(workDir, "dist"))
+
+	r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := filepath.Clean(r.URL.Path)
+		f, err := filesDir.Open(path)
+		if err != nil {
+			// SPA fallback: serve index.html for client-side routing
+			indexFile, err := filesDir.Open("index.html")
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			defer indexFile.Close()
+			stat, err := indexFile.Stat()
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			http.ServeContent(w, r, "index.html", stat.ModTime(), indexFile)
+			return
+		}
+		f.Close()
+		http.FileServer(filesDir).ServeHTTP(w, r)
+	}))
 
 	// Start server
 	srv := &http.Server{
