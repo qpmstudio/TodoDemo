@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -89,15 +88,14 @@ func (h *AuthHandler) GitHubCallback(w http.ResponseWriter, r *http.Request) {
 
 	accessToken, err := h.exchangeCodeForToken(code)
 	if err != nil {
-		slog.Error("failed to exchange code for token", "error", err)
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to exchange code for token")
+		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to exchange code for token: "+err.Error())
 		return
 	}
 
 	// Get GitHub user info
 	githubUser, err := h.getGitHubUser(accessToken)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to get GitHub user info")
+		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to get GitHub user info: "+err.Error())
 		return
 	}
 
