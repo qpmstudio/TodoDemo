@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -88,6 +89,7 @@ func (h *AuthHandler) GitHubCallback(w http.ResponseWriter, r *http.Request) {
 
 	accessToken, err := h.exchangeCodeForToken(code)
 	if err != nil {
+		slog.Error("failed to exchange code for token", "error", err)
 		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to exchange code for token")
 		return
 	}
@@ -186,13 +188,14 @@ func (h *AuthHandler) exchangeCodeForToken(code string) (string, error) {
 	var result struct {
 		AccessToken string `json:"access_token"`
 		Error       string `json:"error"`
+		ErrorDescription string `json:"error_description"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
 
 	if result.Error != "" {
-		return "", fmt.Errorf("github oauth error: %s", result.Error)
+		return "", fmt.Errorf("github oauth error: %s - %s", result.Error, result.ErrorDescription)
 	}
 
 	return result.AccessToken, nil
