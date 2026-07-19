@@ -166,6 +166,7 @@ func (h *AuthHandler) exchangeCodeForToken(code string) (string, error) {
 		"client_id":     {h.cfg.GitHubClientID},
 		"client_secret": {h.cfg.GitHubClientSecret},
 		"code":          {code},
+		"redirect_uri":  {h.cfg.GitHubRedirectURL},
 	}
 
 	req, err := http.NewRequest("POST", "https://github.com/login/oauth/access_token", strings.NewReader(data.Encode()))
