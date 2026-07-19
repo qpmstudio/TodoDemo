@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/DevenWen/TodoDemo/migrate"
+
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
@@ -42,6 +44,14 @@ func main() {
 	defer database.Close()
 
 	logger.Info("connected to database")
+
+	// Run auto migrations
+	if err := migrate.AutoMigrate(ctx, database.Pool); err != nil {
+		logger.Error("failed to run migrations", "error", err)
+		os.Exit(1)
+	}
+
+	logger.Info("migrations complete")
 
 	// Set up router
 	r := chi.NewRouter()
