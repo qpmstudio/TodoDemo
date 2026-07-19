@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tododemo
+  namespace: tododemo-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tododemo
+  template:
+    metadata:
+      labels:
+        app: tododemo
+    spec:
+      containers:
+        - name: tododemo
+          image: tododemo:dev-latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+          envFrom:
+            - secretRef:
+                name: tododemo-env
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tododemo
+  namespace: tododemo-dev
+spec:
+  type: ClusterIP
+  selector:
+    app: tododemo
+  ports:
+    - port: 8080
+      targetPort: 8080
