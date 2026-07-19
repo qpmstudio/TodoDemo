@@ -2,19 +2,17 @@ package migrate
 
 import (
 	"context"
-	"embed"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-//go:embed migrations/*.up.sql
-var migrationFS embed.FS
-
-// AutoMigrate runs embedded SQL migration files that haven't been applied yet.
-func AutoMigrate(ctx context.Context, pool *pgxpool.Pool) error {
+// AutoMigrate runs SQL migration files from the given directory that haven't been applied yet.
+func AutoMigrate(ctx context.Context, pool *pgxpool.Pool, migrationsDir string) error {
 	// Ensure tracking table exists
 	_, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version TEXT PRIMARY KEY,
@@ -24,7 +22,7 @@ func AutoMigrate(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("failed to create schema_migrations table: %w", err)
 	}
 
-	entries, err := migrationFS.ReadDir("migrations")
+	entries, err := os.ReadDir(migrationsDir)
 	if err != nil {
 		return fmt.Errorf("failed to read migrations dir: %w", err)
 	}
@@ -51,7 +49,7 @@ func AutoMigrate(ctx context.Context, pool *pgxpool.Pool) error {
 			continue
 		}
 
-		sql, err := migrationFS.ReadFile("migrations/" + entry.Name())
+		sqlBytes, err := os.ReadFile(filepath.Join(migrationsDir, entry.Name()))
 		if err != nil {
 			return fmt.Errorf("failed to read migration %s: %w", version, err)
 		}
@@ -61,7 +59,7 @@ func AutoMigrate(ctx context.Context, pool *pgxpool.Pool) error {
 			return fmt.Errorf("failed to start tx for migration %s: %w", version, err)
 		}
 
-		if _, err := tx.Exec(ctx, string(sql)); err != nil {
+		if _, err := tx.Exec(ctx, string(sqlBytes)); err != nil {
 			tx.Rollback(ctx)
 			return fmt.Errorf("failed to apply migration %s: %w", version, err)
 		}

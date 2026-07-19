@@ -46,7 +46,7 @@ func main() {
 	logger.Info("connected to database")
 
 	// Run auto migrations
-	if err := migrate.AutoMigrate(ctx, database.Pool); err != nil {
+	if err := migrate.AutoMigrate(ctx, database.Pool, "migrations"); err != nil {
 		logger.Error("failed to run migrations", "error", err)
 		os.Exit(1)
 	}
