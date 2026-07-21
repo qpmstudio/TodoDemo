@@ -1,0 +1,1 @@
+ALTER TABLE users ALTER COLUMN github_login SET NOT NULL;
