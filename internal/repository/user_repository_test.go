@@ -11,9 +11,10 @@ import (
 // For full integration tests, set DATABASE_URL env var.
 
 func TestUserModelFields(t *testing.T) {
+	gitHubID := int64(12345)
 	user := &model.User{
 		ID:              "550e8400-e29b-41d4-a716-446655440000",
-		GitHubID:        12345,
+		GitHubID:        &gitHubID,
 		GitHubLogin:     "testuser",
 		GitHubAvatarURL: "https://avatars.example.com/u/12345",
 		DisplayName:     "Test User",
@@ -22,8 +23,8 @@ func TestUserModelFields(t *testing.T) {
 	if user.ID == "" {
 		t.Error("expected non-empty ID")
 	}
-	if user.GitHubID != 12345 {
-		t.Errorf("expected GitHubID 12345, got %d", user.GitHubID)
+	if user.GitHubID == nil || *user.GitHubID != 12345 {
+		t.Errorf("expected GitHubID 12345, got %v", user.GitHubID)
 	}
 	if user.GitHubLogin != "testuser" {
 		t.Errorf("expected login testuser, got %s", user.GitHubLogin)

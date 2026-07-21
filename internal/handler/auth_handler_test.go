@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/DevenWen/TodoDemo/internal/config"
@@ -224,6 +225,159 @@ func TestWriteError(t *testing.T) {
 	}
 	if apiResp.Data != nil {
 		t.Error("expected null data")
+	}
+}
+
+func TestRegister_InvalidEmail(t *testing.T) {
+	cfg := testConfig()
+	h := NewAuthHandler(cfg)
+
+	tests := []struct {
+		name  string
+		email string
+	}{
+		{"missing @", "notanemail"},
+		{"empty", ""},
+		{"no domain", "user@"},
+		{"no user", "@domain.com"},
+		{"with spaces", "user @domain.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"email":"` + tt.email + `","password":"password123"}`
+			req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			h.Register(rec, req)
+
+			resp := rec.Result()
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("expected 422, got %d", resp.StatusCode)
+			}
+
+			var apiResp model.APIResponse
+			json.NewDecoder(resp.Body).Decode(&apiResp)
+			if apiResp.Error == nil {
+				t.Fatal("expected error response")
+			}
+			if apiResp.Error.Code != model.ErrCodeValidationError {
+				t.Errorf("expected VALIDATION_ERROR, got %s", apiResp.Error.Code)
+			}
+		})
+	}
+}
+
+func TestRegister_ShortPassword(t *testing.T) {
+	cfg := testConfig()
+	h := NewAuthHandler(cfg)
+
+	tests := []struct {
+		name     string
+		password string
+	}{
+		{"empty password", ""},
+		{"1 char", "a"},
+		{"7 chars", "1234567"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"email":"user@example.com","password":"` + tt.password + `"}`
+			req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			h.Register(rec, req)
+
+			resp := rec.Result()
+			if resp.StatusCode != http.StatusUnprocessableEntity {
+				t.Errorf("expected 422, got %d", resp.StatusCode)
+			}
+
+			var apiResp model.APIResponse
+			json.NewDecoder(resp.Body).Decode(&apiResp)
+			if apiResp.Error == nil {
+				t.Fatal("expected error response")
+			}
+			if apiResp.Error.Code != model.ErrCodeValidationError {
+				t.Errorf("expected VALIDATION_ERROR, got %s", apiResp.Error.Code)
+			}
+		})
+	}
+}
+
+func TestRegister_InvalidJSON(t *testing.T) {
+	cfg := testConfig()
+	h := NewAuthHandler(cfg)
+
+	req := httptest.NewRequest("POST", "/auth/register", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Register(rec, req)
+
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422, got %d", resp.StatusCode)
+	}
+}
+
+func TestLogin_InvalidJSON(t *testing.T) {
+	cfg := testConfig()
+	h := NewAuthHandler(cfg)
+
+	req := httptest.NewRequest("POST", "/auth/login", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.Login(rec, req)
+
+	resp := rec.Result()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestLogin_NonexistentUser(t *testing.T) {
+	t.Skip("requires database connection")
+}
+
+func TestRegister_Success(t *testing.T) {
+	t.Skip("requires database connection")
+}
+
+func TestLogin_Success(t *testing.T) {
+	t.Skip("requires database connection")
+}
+
+func TestSetJWTCookie(t *testing.T) {
+	cfg := testConfig()
+	h := NewAuthHandler(cfg)
+
+	rec := httptest.NewRecorder()
+	h.setJWTCookie(rec, "test-token")
+
+	cookies := rec.Result().Cookies()
+	var jwtCookie *http.Cookie
+	for _, c := range cookies {
+		if c.Name == "jwt" {
+			jwtCookie = c
+			break
+		}
+	}
+	if jwtCookie == nil {
+		t.Fatal("expected jwt cookie")
+	}
+	if jwtCookie.Value != "test-token" {
+		t.Errorf("expected token value test-token, got %s", jwtCookie.Value)
+	}
+	if jwtCookie.HttpOnly != true {
+		t.Error("expected HttpOnly cookie")
+	}
+	if jwtCookie.MaxAge != 7*24*60*60 {
+		t.Errorf("expected 7-day MaxAge, got %d", jwtCookie.MaxAge)
 	}
 }
 

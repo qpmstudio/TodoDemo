@@ -78,22 +78,6 @@ func TestLoadMissingDatabaseURL(t *testing.T) {
 	}
 }
 
-func TestLoadMissingGitHubClientID(t *testing.T) {
-	os.Setenv("DATABASE_URL", "postgres://localhost/tododemo")
-	os.Setenv("GITHUB_CLIENT_SECRET", "test")
-	os.Setenv("JWT_SECRET", "test")
-	defer func() {
-		os.Unsetenv("DATABASE_URL")
-		os.Unsetenv("GITHUB_CLIENT_SECRET")
-		os.Unsetenv("JWT_SECRET")
-	}()
-
-	_, err := Load()
-	if err == nil {
-		t.Error("expected error for missing GITHUB_CLIENT_ID")
-	}
-}
-
 func TestLoadMissingJWTSecret(t *testing.T) {
 	os.Setenv("DATABASE_URL", "postgres://localhost/tododemo")
 	os.Setenv("GITHUB_CLIENT_ID", "test")

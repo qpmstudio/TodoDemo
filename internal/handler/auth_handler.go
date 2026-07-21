@@ -4,9 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"strings"
 	"time"
@@ -16,6 +18,8 @@ import (
 	"github.com/DevenWen/TodoDemo/internal/model"
 	"github.com/DevenWen/TodoDemo/internal/repository"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // AuthHandler handles OAuth authentication endpoints.
@@ -100,8 +104,9 @@ func (h *AuthHandler) GitHubCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Upsert user in database
+	gitHubID := githubUser.ID
 	user := &model.User{
-		GitHubID:        githubUser.ID,
+		GitHubID:        &gitHubID,
 		GitHubLogin:     githubUser.Login,
 		GitHubAvatarURL: githubUser.AvatarURL,
 		DisplayName:     githubUser.Name,
@@ -123,17 +128,113 @@ func (h *AuthHandler) GitHubCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set JWT cookie
+	h.setJWTCookie(w, jwtToken)
+
+	// Redirect to frontend
+	http.Redirect(w, r, h.cfg.FrontendURL+"/todos", http.StatusFound)
+}
+
+type authRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// Register handles email + password registration.
+func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
+	var req authRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Invalid request body")
+		return
+	}
+
+	// Validate email
+	if _, err := mail.ParseAddress(req.Email); err != nil || !strings.Contains(req.Email, "@") {
+		writeError(w, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Invalid email address")
+		return
+	}
+
+	// Validate password
+	if len(req.Password) < 8 {
+		writeError(w, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Password must be at least 8 characters")
+		return
+	}
+
+	// Hash password
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to process password")
+		return
+	}
+
+	// Extract display name from email (part before @)
+	displayName := strings.Split(req.Email, "@")[0]
+
+	// Create user
+	user, err := repository.CreateUserByEmail(r.Context(), req.Email, string(hash), displayName)
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, model.ErrCodeConflict, "Email already registered")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create user")
+		return
+	}
+
+	// Create JWT and set cookie
+	jwtToken, err := h.createJWT(user)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create JWT")
+		return
+	}
+
+	h.setJWTCookie(w, jwtToken)
+
+	writeJSON(w, http.StatusCreated, user)
+}
+
+// Login handles email + password login.
+func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	var req authRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password")
+		return
+	}
+
+	// Get user by email
+	user, err := repository.GetUserByEmail(r.Context(), req.Email)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password")
+		return
+	}
+
+	// Compare password
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		writeError(w, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password")
+		return
+	}
+
+	// Create JWT and set cookie
+	jwtToken, err := h.createJWT(user)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create JWT")
+		return
+	}
+
+	h.setJWTCookie(w, jwtToken)
+
+	writeJSON(w, http.StatusOK, user)
+}
+
+// setJWTCookie sets the JWT cookie on the response.
+func (h *AuthHandler) setJWTCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "jwt",
-		Value:    jwtToken,
+		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   7 * 24 * 60 * 60, // 7 days
 	})
-
-	// Redirect to frontend
-	http.Redirect(w, r, h.cfg.FrontendURL+"/todos", http.StatusFound)
 }
 
 // Logout clears the JWT cookie.
@@ -255,6 +356,15 @@ func generateRandomState() (string, error) {
 }
 
 // Helper functions for writing responses
+// isUniqueViolation checks if the error is a PostgreSQL unique constraint violation.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
+	}
+	return false
+}
+
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

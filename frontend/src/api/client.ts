@@ -101,3 +101,32 @@ export async function updateTodo(
 export async function deleteTodo(id: string): Promise<void> {
   await request(`/todos/${id}`, { method: 'DELETE' });
 }
+
+// Auth helpers for non-API-base paths
+async function authRequest<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  const json = await res.json();
+
+  if (!res.ok) {
+    const msg = json?.error?.message || `Request failed with status ${res.status}`;
+    throw new Error(msg);
+  }
+
+  return json;
+}
+
+export async function register(email: string, password: string): Promise<User> {
+  const res = await authRequest<ApiResponse<User>>('/auth/register', { email, password });
+  return res.data!;
+}
+
+export async function login(email: string, password: string): Promise<User> {
+  const res = await authRequest<ApiResponse<User>>('/auth/login', { email, password });
+  return res.data!;
+}

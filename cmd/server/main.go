@@ -76,6 +76,8 @@ func main() {
 	// Auth routes (public)
 	r.Get("/auth/github/login", authHandler.GitHubLogin)
 	r.Get("/auth/github/callback", authHandler.GitHubCallback)
+	r.Post("/auth/register", authHandler.Register)
+	r.Post("/auth/login", authHandler.Login)
 
 	// Protected API routes
 	r.Route("/api/v1", func(r chi.Router) {

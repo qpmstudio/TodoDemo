@@ -30,9 +30,46 @@ func UpsertUser(ctx context.Context, user *model.User) error {
 func GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	user := &model.User{}
 	err := database.Pool.QueryRow(ctx,
-		`SELECT id, github_id, github_login, github_avatar_url, display_name, created_at, updated_at
+		`SELECT id, github_id, github_login, github_avatar_url, email, display_name, created_at, updated_at
 		 FROM users WHERE id = $1`, id,
-	).Scan(&user.ID, &user.GitHubID, &user.GitHubLogin, &user.GitHubAvatarURL, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.GitHubID, &user.GitHubLogin, &user.GitHubAvatarURL, &user.Email, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+// CreateUserByEmail creates a new user with email and password auth.
+func CreateUserByEmail(ctx context.Context, email, passwordHash, displayName string) (*model.User, error) {
+	now := time.Now()
+	user := &model.User{
+		Email:        email,
+		PasswordHash: passwordHash,
+		DisplayName:  displayName,
+	}
+	err := database.Pool.QueryRow(ctx,
+		`INSERT INTO users (email, password_hash, display_name, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, created_at, updated_at`,
+		user.Email,
+		user.PasswordHash,
+		user.DisplayName,
+		now,
+		now,
+	).Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+// GetUserByEmail retrieves a user by email (only for email-auth users).
+func GetUserByEmail(ctx context.Context, email string) (*model.User, error) {
+	user := &model.User{}
+	err := database.Pool.QueryRow(ctx,
+		`SELECT id, github_id, github_login, github_avatar_url, email, password_hash, display_name, created_at, updated_at
+		 FROM users WHERE email = $1 AND github_id IS NULL`, email,
+	).Scan(&user.ID, &user.GitHubID, &user.GitHubLogin, &user.GitHubAvatarURL, &user.Email, &user.PasswordHash, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

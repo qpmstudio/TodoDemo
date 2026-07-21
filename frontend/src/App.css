@@ -55,6 +55,114 @@
 .login-card__button:hover {
   background: #1a1f23;
 }
+.login-card__button--github {
+  display: block;
+  width: 100%;
+  text-align: center;
+}
+
+/* ── Auth Tabs ── */
+.auth-tabs {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+.auth-tabs__tab {
+  flex: 1;
+  padding: 10px 0;
+  border: none;
+  background: var(--bg);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.auth-tabs__tab:hover {
+  background: var(--bg-secondary);
+}
+.auth-tabs__tab--active {
+  background: var(--primary);
+  color: #fff;
+}
+.auth-tabs__tab--active:hover {
+  background: var(--primary-hover);
+}
+
+/* ── Auth Form ── */
+.auth-form {
+  text-align: left;
+}
+.auth-form__error {
+  background: #fef2f2;
+  color: var(--danger);
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.auth-form__field {
+  margin-bottom: 12px;
+}
+.auth-form__field label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.auth-form__field input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 15px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+.auth-form__field input:focus {
+  border-color: var(--primary);
+}
+.auth-form__button {
+  width: 100%;
+  padding: 12px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s;
+  margin-top: 4px;
+}
+.auth-form__button:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+.auth-form__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Auth Separator ── */
+.auth-separator {
+  display: flex;
+  align-items: center;
+  margin: 20px 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.auth-separator::before,
+.auth-separator::after {
+  content: '';
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+.auth-separator span {
+  padding: 0 12px;
+}
 
 /* ── Header ── */
 .header {

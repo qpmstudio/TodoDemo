@@ -32,12 +32,6 @@ func Load() (*Config, error) {
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
 	}
-	if cfg.GitHubClientID == "" {
-		return nil, fmt.Errorf("GITHUB_CLIENT_ID is required")
-	}
-	if cfg.GitHubClientSecret == "" {
-		return nil, fmt.Errorf("GITHUB_CLIENT_SECRET is required")
-	}
 	if cfg.JWTSecret == "" {
 		return nil, fmt.Errorf("JWT_SECRET is required")
 	}
