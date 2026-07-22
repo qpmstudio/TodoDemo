@@ -30,7 +30,7 @@ func UpsertUser(ctx context.Context, user *model.User) error {
 func GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	user := &model.User{}
 	err := database.Pool.QueryRow(ctx,
-		`SELECT id, github_id, github_login, github_avatar_url, email, display_name, created_at, updated_at
+		`SELECT id, github_id, COALESCE(github_login, ''), COALESCE(github_avatar_url, ''), email, display_name, created_at, updated_at
 		 FROM users WHERE id = $1`, id,
 	).Scan(&user.ID, &user.GitHubID, &user.GitHubLogin, &user.GitHubAvatarURL, &user.Email, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
@@ -67,7 +67,7 @@ func CreateUserByEmail(ctx context.Context, email, passwordHash, displayName str
 func GetUserByEmail(ctx context.Context, email string) (*model.User, error) {
 	user := &model.User{}
 	err := database.Pool.QueryRow(ctx,
-		`SELECT id, github_id, github_login, github_avatar_url, email, password_hash, display_name, created_at, updated_at
+		`SELECT id, github_id, COALESCE(github_login, ''), COALESCE(github_avatar_url, ''), email, password_hash, display_name, created_at, updated_at
 		 FROM users WHERE email = $1 AND github_id IS NULL`, email,
 	).Scan(&user.ID, &user.GitHubID, &user.GitHubLogin, &user.GitHubAvatarURL, &user.Email, &user.PasswordHash, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
