@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/DevenWen/TodoDemo/internal/logging"
 )
 
 // Pool is the global database connection pool.
@@ -84,7 +86,11 @@ func (queryTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.Tr
 }
 
 func (queryTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	// Prefer the request-scoped logger so query logs carry the request_id.
 	l := queryLogger()
+	if requestLogger, ok := logging.Lookup(ctx); ok {
+		l = requestLogger
+	}
 	if !l.Enabled(ctx, slog.LevelDebug) {
 		return
 	}

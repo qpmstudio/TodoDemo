@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5/middleware"
+
+	"github.com/DevenWen/TodoDemo/internal/logging"
 )
 
 // maxLoggedBody caps how much of a request or response body is kept for logs.
@@ -31,7 +33,7 @@ func Logger(logger *slog.Logger) func(next http.Handler) http.Handler {
 			if id := middleware.GetReqID(r.Context()); id != "" {
 				reqLogger = logger.With("request_id", id)
 			}
-			ctx := WithLogger(r.Context(), reqLogger)
+			ctx := logging.WithLogger(r.Context(), reqLogger)
 			r = r.WithContext(ctx)
 
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
@@ -100,21 +102,6 @@ type contextKey string
 
 const UserIDKey contextKey = "user_id"
 const UserLoginKey contextKey = "user_login"
-const loggerKey contextKey = "logger"
-
-// WithLogger stores a request-scoped logger in ctx.
-func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
-	return context.WithValue(ctx, loggerKey, logger)
-}
-
-// LoggerFromContext returns the request-scoped logger, falling back to
-// slog.Default when the request did not pass through the Logger middleware.
-func LoggerFromContext(ctx context.Context) *slog.Logger {
-	if logger, ok := ctx.Value(loggerKey).(*slog.Logger); ok && logger != nil {
-		return logger
-	}
-	return slog.Default()
-}
 
 // GetUserID extracts the user ID from the request context.
 func GetUserID(ctx context.Context) (string, bool) {

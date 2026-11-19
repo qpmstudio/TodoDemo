@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/DevenWen/TodoDemo/internal/logging"
 )
 
 func TestQueryTracerLogsQueryAtDebug(t *testing.T) {
@@ -57,5 +59,31 @@ func TestCompactSQLLimitsLength(t *testing.T) {
 	}
 	if got[len(got)-len("...(truncated)"):] != "...(truncated)" {
 		t.Errorf("expected truncation marker, got %q", got)
+	}
+}
+
+func TestQueryTracerUsesRequestLogger(t *testing.T) {
+	var global bytes.Buffer
+	SetLogger(slog.New(slog.NewJSONHandler(&global, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { SetLogger(nil) })
+
+	var request bytes.Buffer
+	requestLogger := slog.New(slog.NewJSONHandler(&request, &slog.HandlerOptions{Level: slog.LevelDebug})).
+		With("request_id", "req-1")
+
+	ctx := logging.WithLogger(context.Background(), requestLogger)
+	tracer := queryTracer{}
+	ctx = tracer.TraceQueryStart(ctx, nil, pgx.TraceQueryStartData{SQL: "SELECT 1"})
+	tracer.TraceQueryEnd(ctx, nil, pgx.TraceQueryEndData{})
+
+	var entry map[string]any
+	if err := json.Unmarshal(request.Bytes(), &entry); err != nil {
+		t.Fatalf("request log is not valid JSON: %v (%q)", err, request.String())
+	}
+	if entry["request_id"] != "req-1" {
+		t.Errorf("expected request_id from request logger, got %v", entry["request_id"])
+	}
+	if global.Len() != 0 {
+		t.Errorf("global logger should not be used when a request logger exists: %s", global.String())
 	}
 }

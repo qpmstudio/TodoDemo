@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/DevenWen/TodoDemo/internal/logging"
 )
 
 func TestLogger(t *testing.T) {
@@ -156,14 +158,20 @@ func TestLoggerEscalatesServerErrors(t *testing.T) {
 }
 
 func TestLoggerFromContextFallsBackToDefault(t *testing.T) {
-	if LoggerFromContext(t.Context()) != slog.Default() {
+	if logging.FromContext(t.Context()) != slog.Default() {
 		t.Error("expected slog.Default() when no logger is in context")
 	}
 
 	custom := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	ctx := WithLogger(t.Context(), custom)
-	if LoggerFromContext(ctx) != custom {
+	ctx := logging.WithLogger(t.Context(), custom)
+	if logging.FromContext(ctx) != custom {
 		t.Error("expected the logger stored in context")
+	}
+	if got, ok := logging.Lookup(ctx); !ok || got != custom {
+		t.Error("expected Lookup to report the stored logger")
+	}
+	if _, ok := logging.Lookup(t.Context()); ok {
+		t.Error("expected Lookup to report no logger for a bare context")
 	}
 }
 

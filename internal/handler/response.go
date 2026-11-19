@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"runtime/debug"
 
+	"github.com/DevenWen/TodoDemo/internal/logging"
 	"github.com/DevenWen/TodoDemo/internal/middleware"
 	"github.com/DevenWen/TodoDemo/internal/model"
 )
@@ -34,7 +35,7 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, code, messag
 
 // logErrorResponse logs the context of an error response.
 func logErrorResponse(r *http.Request, status int, code, message string, cause error) {
-	logger := middleware.LoggerFromContext(r.Context())
+	logger := logging.FromContext(r.Context())
 
 	attrs := []any{
 		"status", status,

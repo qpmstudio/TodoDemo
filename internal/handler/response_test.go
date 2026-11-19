@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/DevenWen/TodoDemo/internal/logging"
 	"github.com/DevenWen/TodoDemo/internal/middleware"
 	"github.com/DevenWen/TodoDemo/internal/model"
 )
@@ -21,7 +22,7 @@ func requestWithLogger(t *testing.T, method, target string) (*http.Request, *byt
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	req := httptest.NewRequest(method, target, nil)
-	ctx := middleware.WithLogger(req.Context(), logger)
+	ctx := logging.WithLogger(req.Context(), logger)
 	ctx = context.WithValue(ctx, middleware.UserIDKey, "user-1")
 	return req.WithContext(ctx), &buf
 }

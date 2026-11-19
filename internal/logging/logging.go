@@ -2,6 +2,7 @@
 package logging
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -40,4 +41,27 @@ func New(level string) (*slog.Logger, error) {
 		Level:     lvl,
 		AddSource: lvl <= slog.LevelDebug,
 	})), nil
+}
+
+// loggerKey is the context key holding a request-scoped logger.
+type loggerKey struct{}
+
+// WithLogger stores a logger in ctx.
+func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
+	return context.WithValue(ctx, loggerKey{}, logger)
+}
+
+// Lookup returns the logger stored in ctx and reports whether one was set.
+func Lookup(ctx context.Context) (*slog.Logger, bool) {
+	logger, ok := ctx.Value(loggerKey{}).(*slog.Logger)
+	return logger, ok && logger != nil
+}
+
+// FromContext returns the logger stored in ctx, falling back to slog.Default
+// when the request did not pass through the logging middleware.
+func FromContext(ctx context.Context) *slog.Logger {
+	if logger, ok := Lookup(ctx); ok {
+		return logger
+	}
+	return slog.Default()
 }

@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/DevenWen/TodoDemo/internal/config"
-	"github.com/DevenWen/TodoDemo/internal/middleware"
+	"github.com/DevenWen/TodoDemo/internal/logging"
 	"github.com/DevenWen/TodoDemo/internal/model"
 )
 
@@ -213,7 +213,7 @@ func TestWriteError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
-	req = req.WithContext(middleware.WithLogger(req.Context(), logger))
+	req = req.WithContext(logging.WithLogger(req.Context(), logger))
 	writeError(rec, req, http.StatusNotFound, model.ErrCodeNotFound, "Not found", nil)
 
 	resp := rec.Result()
