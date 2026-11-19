@@ -19,18 +19,30 @@ import (
 	"github.com/DevenWen/TodoDemo/internal/config"
 	"github.com/DevenWen/TodoDemo/internal/database"
 	"github.com/DevenWen/TodoDemo/internal/handler"
+	"github.com/DevenWen/TodoDemo/internal/logging"
 	"github.com/DevenWen/TodoDemo/internal/middleware"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Bootstrap logger, used only until LOG_LEVEL is known.
+	bootstrapLogger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Error("failed to load config", "error", err)
+		bootstrapLogger.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	logger, err := logging.New(cfg.LogLevel)
+	if err != nil {
+		bootstrapLogger.Error("failed to configure logger", "error", err)
+		os.Exit(1)
+	}
+	slog.SetDefault(logger)
+	database.SetLogger(logger)
+
+	logger.Debug("configuration loaded", "log_level", cfg.LogLevel, "port", cfg.Port)
 
 	// Connect to database
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

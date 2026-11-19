@@ -14,6 +14,7 @@ type Config struct {
 	JWTSecret          string
 	FrontendURL        string
 	GitHubRedirectURL  string
+	LogLevel           string
 }
 
 // Load reads configuration from environment variables.
@@ -26,6 +27,7 @@ func Load() (*Config, error) {
 		JWTSecret:          os.Getenv("JWT_SECRET"),
 		FrontendURL:        getEnv("FRONTEND_URL", "http://localhost:5173"),
 		GitHubRedirectURL:  getEnv("GITHUB_REDIRECT_URL", "http://localhost:8080/auth/github/callback"),
+		LogLevel:           getEnv("LOG_LEVEL", "debug"),
 	}
 
 	// Validate required config

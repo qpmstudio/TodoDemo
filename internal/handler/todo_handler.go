@@ -46,7 +46,7 @@ func (h *TodoHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	todos, total, err := repository.ListTodos(r.Context(), filter)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to fetch todos")
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to fetch todos", err)
 		return
 	}
 
@@ -63,24 +63,24 @@ func (h *TodoHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	var req model.CreateTodoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, model.ErrCodeValidationError, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Invalid request body", err)
 		return
 	}
 
 	// Validate
 	req.Title = strings.TrimSpace(req.Title)
 	if req.Title == "" {
-		writeError(w, http.StatusBadRequest, model.ErrCodeValidationError, "Title is required")
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Title is required", nil)
 		return
 	}
 	if len(req.Title) > 500 {
-		writeError(w, http.StatusBadRequest, model.ErrCodeValidationError, "Title must be 500 characters or less")
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Title must be 500 characters or less", nil)
 		return
 	}
 
 	todo, err := repository.CreateTodo(r.Context(), userID, req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create todo")
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create todo", err)
 		return
 	}
 
@@ -94,7 +94,7 @@ func (h *TodoHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	var req model.UpdateTodoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, model.ErrCodeValidationError, "Invalid request body")
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Invalid request body", err)
 		return
 	}
 
@@ -102,11 +102,11 @@ func (h *TodoHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.Title != nil {
 		trimmed := strings.TrimSpace(*req.Title)
 		if trimmed == "" {
-			writeError(w, http.StatusBadRequest, model.ErrCodeValidationError, "Title cannot be empty")
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Title cannot be empty", nil)
 			return
 		}
 		if len(trimmed) > 500 {
-			writeError(w, http.StatusBadRequest, model.ErrCodeValidationError, "Title must be 500 characters or less")
+			writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Title must be 500 characters or less", nil)
 			return
 		}
 		req.Title = &trimmed
@@ -115,10 +115,10 @@ func (h *TodoHandler) Update(w http.ResponseWriter, r *http.Request) {
 	todo, err := repository.UpdateTodo(r.Context(), todoID, userID, req)
 	if err != nil {
 		if repository.IsNotFoundError(err) {
-			writeError(w, http.StatusNotFound, model.ErrCodeNotFound, "Todo not found")
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "Todo not found", err)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to update todo")
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to update todo", err)
 		return
 	}
 
@@ -133,10 +133,10 @@ func (h *TodoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	err := repository.SoftDeleteTodo(r.Context(), todoID, userID)
 	if err != nil {
 		if repository.IsNotFoundError(err) {
-			writeError(w, http.StatusNotFound, model.ErrCodeNotFound, "Todo not found")
+			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "Todo not found", err)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to delete todo")
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to delete todo", err)
 		return
 	}
 
