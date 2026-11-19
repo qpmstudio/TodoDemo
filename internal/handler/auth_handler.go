@@ -36,7 +36,7 @@ func NewAuthHandler(cfg *config.Config) *AuthHandler {
 func (h *AuthHandler) GitHubLogin(w http.ResponseWriter, r *http.Request) {
 	state, err := generateRandomState()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to generate state")
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to generate state", err)
 		return
 	}
 
@@ -64,13 +64,13 @@ func (h *AuthHandler) GitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// Verify state
 	stateCookie, err := r.Cookie("oauth_state")
 	if err != nil {
-		writeError(w, http.StatusBadRequest, model.ErrCodeValidationError, "Missing state cookie")
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Missing state cookie", err)
 		return
 	}
 
 	queryState := r.URL.Query().Get("state")
 	if queryState == "" || queryState != stateCookie.Value {
-		writeError(w, http.StatusBadRequest, model.ErrCodeValidationError, "Invalid state parameter")
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Invalid state parameter", nil)
 		return
 	}
 
@@ -86,20 +86,20 @@ func (h *AuthHandler) GitHubCallback(w http.ResponseWriter, r *http.Request) {
 	// Exchange code for access token
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		writeError(w, http.StatusBadRequest, model.ErrCodeValidationError, "Missing authorization code")
+		writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Missing authorization code", nil)
 		return
 	}
 
 	accessToken, err := h.exchangeCodeForToken(code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to exchange code for token: "+err.Error())
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to exchange code for token: "+err.Error(), err)
 		return
 	}
 
 	// Get GitHub user info
 	githubUser, err := h.getGitHubUser(accessToken)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to get GitHub user info: "+err.Error())
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to get GitHub user info: "+err.Error(), err)
 		return
 	}
 
@@ -116,14 +116,14 @@ func (h *AuthHandler) GitHubCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := repository.UpsertUser(r.Context(), user); err != nil {
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to save user")
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to save user", err)
 		return
 	}
 
 	// Create JWT
 	jwtToken, err := h.createJWT(user)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create JWT")
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create JWT", err)
 		return
 	}
 
@@ -143,26 +143,26 @@ type authRequest struct {
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req authRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Invalid request body")
+		writeError(w, r, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Invalid request body", err)
 		return
 	}
 
 	// Validate email
 	if _, err := mail.ParseAddress(req.Email); err != nil || !strings.Contains(req.Email, "@") {
-		writeError(w, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Invalid email address")
+		writeError(w, r, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Invalid email address", nil)
 		return
 	}
 
 	// Validate password
 	if len(req.Password) < 8 {
-		writeError(w, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Password must be at least 8 characters")
+		writeError(w, r, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Password must be at least 8 characters", nil)
 		return
 	}
 
 	// Hash password
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to process password")
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to process password", err)
 		return
 	}
 
@@ -173,17 +173,17 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	user, err := repository.CreateUserByEmail(r.Context(), req.Email, string(hash), displayName)
 	if err != nil {
 		if isUniqueViolation(err) {
-			writeError(w, http.StatusConflict, model.ErrCodeConflict, "Email already registered")
+			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "Email already registered", err)
 			return
 		}
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create user")
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create user", err)
 		return
 	}
 
 	// Create JWT and set cookie
 	jwtToken, err := h.createJWT(user)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create JWT")
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create JWT", err)
 		return
 	}
 
@@ -196,27 +196,27 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req authRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password")
+		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password", err)
 		return
 	}
 
 	// Get user by email
 	user, err := repository.GetUserByEmail(r.Context(), req.Email)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password")
+		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password", err)
 		return
 	}
 
 	// Compare password
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		writeError(w, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password")
+		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password", err)
 		return
 	}
 
 	// Create JWT and set cookie
 	jwtToken, err := h.createJWT(user)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create JWT")
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create JWT", err)
 		return
 	}
 
@@ -256,7 +256,7 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	userID, _ := middleware.GetUserID(r.Context())
 	user, err := repository.GetUserByID(r.Context(), userID)
 	if err != nil {
-		writeError(w, http.StatusNotFound, model.ErrCodeNotFound, "User not found")
+		writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "User not found", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, user)
@@ -285,8 +285,8 @@ func (h *AuthHandler) exchangeCodeForToken(code string) (string, error) {
 	defer resp.Body.Close()
 
 	var result struct {
-		AccessToken string `json:"access_token"`
-		Error       string `json:"error"`
+		AccessToken      string `json:"access_token"`
+		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -363,18 +363,4 @@ func isUniqueViolation(err error) bool {
 		return pgErr.Code == "23505"
 	}
 	return false
-}
-
-func writeJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(model.APIResponse{Data: data})
-}
-
-func writeError(w http.ResponseWriter, status int, code string, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(model.APIResponse{
-		Error: &model.APIError{Code: code, Message: message},
-	})
 }
