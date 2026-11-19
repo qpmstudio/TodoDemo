@@ -175,6 +175,21 @@ func TestLoggerFromContextFallsBackToDefault(t *testing.T) {
 	}
 }
 
+func TestRedactBodyKeepsErrorCodes(t *testing.T) {
+	body := []byte(`{"error":{"code":"VALIDATION_ERROR","message":"bad"},"password":"hunter2"}`)
+	got := redactBody(body)
+
+	if !strings.Contains(got, "VALIDATION_ERROR") {
+		t.Errorf("API error code must not be redacted: %s", got)
+	}
+	if strings.Contains(got, "hunter2") {
+		t.Errorf("password must be redacted: %s", got)
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("expected redaction marker: %s", got)
+	}
+}
+
 func TestRedactQuery(t *testing.T) {
 	query := redactQuery(map[string][]string{
 		"code":  {"oauth-code"},

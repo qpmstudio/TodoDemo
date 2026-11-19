@@ -147,8 +147,9 @@ type teeReadCloser struct {
 	io.Closer
 }
 
-// sensitiveKeys are JSON keys whose values must never reach the logs.
-var sensitiveKeys = map[string]bool{
+// sensitiveBodyKeys are JSON keys whose values must never reach the logs.
+// "code" is intentionally absent: it is a meaningful API error code.
+var sensitiveBodyKeys = map[string]bool{
 	"password":      true,
 	"password_hash": true,
 	"token":         true,
@@ -159,14 +160,27 @@ var sensitiveKeys = map[string]bool{
 	"client_secret": true,
 	"jwt":           true,
 	"jwt_secret":    true,
-	"github_secret": true,
-	"oauth_state":   true,
-	"code":          true,
-	"state":         true,
 }
 
-func isSensitiveKey(key string) bool {
-	return sensitiveKeys[strings.ToLower(key)]
+// sensitiveQueryKeys are query parameter names whose values are masked.
+// OAuth "code" and "state" are one-time credentials, so they are masked here.
+var sensitiveQueryKeys = map[string]bool{
+	"code":          true,
+	"state":         true,
+	"oauth_state":   true,
+	"token":         true,
+	"access_token":  true,
+	"refresh_token": true,
+	"password":      true,
+	"secret":        true,
+}
+
+func isSensitiveBodyKey(key string) bool {
+	return sensitiveBodyKeys[strings.ToLower(key)]
+}
+
+func isSensitiveQueryKey(key string) bool {
+	return sensitiveQueryKeys[strings.ToLower(key)]
 }
 
 // redactBody masks sensitive JSON fields. Non-JSON bodies are returned as-is.
@@ -187,7 +201,7 @@ func redactValue(value any) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, nested := range typed {
-			if isSensitiveKey(key) {
+			if isSensitiveBodyKey(key) {
 				typed[key] = "[REDACTED]"
 				continue
 			}
@@ -207,7 +221,7 @@ func redactQuery(query url.Values) string {
 	}
 	cleaned := make(url.Values, len(query))
 	for key, values := range query {
-		if isSensitiveKey(key) {
+		if isSensitiveQueryKey(key) {
 			cleaned[key] = []string{"[REDACTED]"}
 			continue
 		}
