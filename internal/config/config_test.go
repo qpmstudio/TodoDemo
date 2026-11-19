@@ -62,6 +62,34 @@ func TestLoadCustomPort(t *testing.T) {
 	}
 }
 
+func TestLoadLogLevelDefaultsToDebug(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/tododemo")
+	t.Setenv("JWT_SECRET", "test")
+	t.Setenv("LOG_LEVEL", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("expected default log level debug, got %q", cfg.LogLevel)
+	}
+}
+
+func TestLoadCustomLogLevel(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/tododemo")
+	t.Setenv("JWT_SECRET", "test")
+	t.Setenv("LOG_LEVEL", "warn")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if cfg.LogLevel != "warn" {
+		t.Errorf("expected log level warn, got %q", cfg.LogLevel)
+	}
+}
+
 func TestLoadMissingDatabaseURL(t *testing.T) {
 	os.Setenv("GITHUB_CLIENT_ID", "test")
 	os.Setenv("GITHUB_CLIENT_SECRET", "test")
