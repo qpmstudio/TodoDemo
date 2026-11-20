@@ -15,8 +15,8 @@ spec:
     spec:
       containers:
         - name: tododemo
-          image: tododemo:dev-latest
-          imagePullPolicy: IfNotPresent
+          image: 192.168.3.49:30500/tododemo:dev-latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           env:

@@ -5,6 +5,15 @@ on:
     branches:
       - dev
 
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+env:
+  REGISTRY: 192.168.3.49:30500
+  IMAGE_NAME: 192.168.3.49:30500/tododemo
+  KANIKO: /usr/local/bin/kaniko-executor
+
 jobs:
   build-and-deploy:
     runs-on: self-hosted
@@ -12,22 +21,50 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build Docker Image
-        run: docker build -t tododemo:dev-latest .
+      - name: Build Image with kaniko
+        run: |
+          set -euo pipefail
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+
+          # index.docker.io TLS is cut on this network; the same registry is
+          # reachable as registry-1.docker.io.
+          sed -i -E 's#^FROM (node|golang|alpine):#FROM registry-1.docker.io/library/\1:#' Dockerfile
+          # proxy.golang.org fails on TLS1.3 here; goproxy.cn works.
+          sed -i '/^FROM registry-1.docker.io\/library\/golang:/a ENV GOPROXY=https://goproxy.cn' Dockerfile
+          echo '--- patched Dockerfile ---'
+          grep -nE '^FROM|GOPROXY' Dockerfile
+
+          "$KANIKO" \
+            --context="dir://${GITHUB_WORKSPACE}" \
+            --dockerfile="${GITHUB_WORKSPACE}/Dockerfile" \
+            --destination="${IMAGE_NAME}:dev-${SHORT_SHA}" \
+            --destination="${IMAGE_NAME}:dev-latest" \
+            --insecure-registry="${REGISTRY}" \
+            --cache=false \
+            --force \
+            --verbosity=info
 
       - name: Deploy to K8s
-        run: kubectl apply -f deploy/k8s/ -n tododemo-dev
-
-      - name: Restart Deployment
-        run: kubectl rollout restart deployment/tododemo -n tododemo-dev
-
-      - name: Wait for Rollout
-        run: kubectl rollout status deployment/tododemo -n tododemo-dev --timeout=120s
+        run: |
+          kubectl apply -f deploy/k8s/ -n tododemo-dev
+          kubectl rollout status deployment/tododemo -n tododemo-dev --timeout=180s
 
       - name: Health Check
         run: |
-          kubectl port-forward -n tododemo-dev svc/tododemo 8080:8080 &
+          kubectl -n tododemo-dev port-forward svc/tododemo 18081:8080 >/tmp/pf.log 2>&1 &
           PF_PID=$!
-          sleep 2
-          curl -s --retry 5 --retry-connrefused http://localhost:8080/health
-          kill $PF_PID 2>/dev/null || true
+          trap 'kill $PF_PID 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:18081/health; then
+              echo
+              echo "health OK"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo '--- port-forward log ---'
+          cat /tmp/pf.log
+          echo '--- pod state ---'
+          kubectl -n tododemo-dev get pods -l app=tododemo -o wide
+          exit 1
