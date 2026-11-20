@@ -99,8 +99,13 @@ jobs:
 
       - name: Deploy to K8s
         run: |
-          kubectl apply -f deploy/k8s/ -n tododemo-dev
+          set -euo pipefail
+          # Pin the immutable per-commit tag: a mutable :dev-latest does not change
+          # the pod template, so the Deployment would never roll on a new build.
+          sed "s#:dev-latest#:dev-${SHORT_SHA}#g" deploy/k8s/deployment.yaml | kubectl apply -n tododemo-dev -f -
+          kubectl -n tododemo-dev set image deployment/tododemo tododemo="${IMAGE_NAME}:dev-${SHORT_SHA}"
           kubectl rollout status deployment/tododemo -n tododemo-dev --timeout=180s
+          kubectl -n tododemo-dev get deploy tododemo -o json | grep -o 'tododemo:dev-[a-z0-9]*' | head -1
 
       - name: Health Check
         run: |
