@@ -77,6 +77,9 @@ jobs:
                           --destination=${IMAGE_NAME}:dev-latest \
                           --insecure-registry=${REGISTRY} \
                           --cache=false --force --verbosity=info
+                    resources:
+                      limits: {cpu: "2", memory: 4Gi}
+                      requests: {cpu: 500m, memory: 512Mi}
                     volumeMounts:
                       - {name: workspace, mountPath: /workspace}
                 volumes:
