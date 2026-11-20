@@ -5,14 +5,11 @@ on:
     branches:
       - dev
 
-concurrency:
-  group: deploy-dev
-  cancel-in-progress: false
-
 env:
   REGISTRY: 192.168.3.49:30500
   IMAGE_NAME: 192.168.3.49:30500/tododemo
-  KANIKO: /usr/local/bin/kaniko-executor
+  BUILD_NS: ci
+  KANIKO_JOB: kaniko-tododemo
 
 jobs:
   build-and-deploy:
@@ -21,29 +18,81 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build Image with kaniko
+      - name: Build Image with kaniko Job
         run: |
           set -euo pipefail
           SHORT_SHA=$(git rev-parse --short HEAD)
           echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
 
-          # index.docker.io TLS is cut on this network; the same registry is
-          # reachable as registry-1.docker.io.
-          sed -i -E 's#^FROM (node|golang|alpine):#FROM registry-1.docker.io/library/\1:#' Dockerfile
-          # proxy.golang.org fails on TLS1.3 here; goproxy.cn works.
-          sed -i '/^FROM registry-1.docker.io\/library\/golang:/a ENV GOPROXY=https://goproxy.cn' Dockerfile
-          echo '--- patched Dockerfile ---'
-          grep -nE '^FROM|GOPROXY' Dockerfile
+          # kaniko unpacks base images over its own root filesystem and deletes files that
+          # are not part of the image, so the build context MUST live on a mounted volume
+          # (emptyDir), never on an overlay fs. That is also why the build runs in its own
+          # Job instead of inside the runner pod: kaniko must not touch the runner's fs.
+          kubectl -n "$BUILD_NS" delete job "$KANIKO_JOB" --ignore-not-found
 
-          "$KANIKO" \
-            --context="dir://${GITHUB_WORKSPACE}" \
-            --dockerfile="${GITHUB_WORKSPACE}/Dockerfile" \
-            --destination="${IMAGE_NAME}:dev-${SHORT_SHA}" \
-            --destination="${IMAGE_NAME}:dev-latest" \
-            --insecure-registry="${REGISTRY}" \
-            --cache=false \
-            --force \
-            --verbosity=info
+          cat > /tmp/kaniko-job.yaml <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${KANIKO_JOB}
+            namespace: ${BUILD_NS}
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 900
+            template:
+              spec:
+                restartPolicy: Never
+                initContainers:
+                  - name: prep
+                    image: ${REGISTRY}/actions-runner:2.338.2
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        set -euo pipefail
+                        git clone --depth 1 https://github.com/${GITHUB_REPOSITORY}.git /workspace/src
+                        cd /workspace/src
+                        git fetch --depth 1 origin ${GITHUB_SHA}
+                        git checkout -q FETCH_HEAD
+                        # index.docker.io TLS is cut on this network; the same registry is
+                        # reachable as registry-1.docker.io.
+                        sed -i -E 's#^FROM (node|golang|alpine):#FROM registry-1.docker.io/library/\1:#' Dockerfile
+                        # proxy.golang.org fails on TLS1.3 here; goproxy.cn works.
+                        sed -i '/^FROM registry-1.docker.io\/library\/golang:/a ENV GOPROXY=https://goproxy.cn' Dockerfile
+                        grep -nE '^FROM|GOPROXY' Dockerfile
+                    volumeMounts:
+                      - {name: workspace, mountPath: /workspace}
+                containers:
+                  - name: kaniko
+                    image: ${REGISTRY}/actions-runner:2.338.2
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/sh", "-c"]
+                    args:
+                      - |
+                        set -euo pipefail
+                        /usr/local/bin/kaniko-executor \
+                          --context=dir:///workspace/src \
+                          --dockerfile=/workspace/src/Dockerfile \
+                          --destination=${IMAGE_NAME}:dev-${SHORT_SHA} \
+                          --destination=${IMAGE_NAME}:dev-latest \
+                          --insecure-registry=${REGISTRY} \
+                          --cache=false --force --verbosity=info
+                    volumeMounts:
+                      - {name: workspace, mountPath: /workspace}
+                volumes:
+                  - name: workspace
+                    emptyDir: {}
+          EOF
+
+          kubectl apply -f /tmp/kaniko-job.yaml
+
+          if ! kubectl -n "$BUILD_NS" wait --for=condition=complete "job/$KANIKO_JOB" --timeout=600s; then
+            echo '--- kaniko job failed, logs ---'
+            kubectl -n "$BUILD_NS" logs "job/$KANIKO_JOB" --tail=200 || true
+            kubectl -n "$BUILD_NS" describe "job/$KANIKO_JOB" | tail -20 || true
+            exit 1
+          fi
+          kubectl -n "$BUILD_NS" logs "job/$KANIKO_JOB" --tail=20
 
       - name: Deploy to K8s
         run: |
