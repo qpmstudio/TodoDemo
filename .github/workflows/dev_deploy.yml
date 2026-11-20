@@ -92,7 +92,7 @@ jobs:
             kubectl -n "$BUILD_NS" describe "job/$KANIKO_JOB" | tail -20 || true
             exit 1
           fi
-          kubectl -n "$BUILD_NS" logs "job/$KANIKO_JOB" --tail=20
+          kubectl -n "$BUILD_NS" logs "job/$KANIKO_JOB" --tail=20 || true
 
       - name: Deploy to K8s
         run: |
