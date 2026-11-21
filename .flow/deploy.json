@@ -1,0 +1,8 @@
+{
+  "deploy_1": {
+    "url": "",
+    "namespace": "",
+    "deployment": "",
+    "image_repo": ""
+  }
+}

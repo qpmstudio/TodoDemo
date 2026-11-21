@@ -1,0 +1,57 @@
+# 部署 workflow 模板（flow-deploy）
+# 复制到 <repo>/.github/workflows/deploy.yml，按本仓库的构建/发布方式改「build」「deploy」两步。
+# 触发只认标签：deploy_<env>@<yyyymmDDHHMMSS>；环境地址来自仓库里的 .flow/deploy.json。
+
+name: deploy
+
+on:
+  push:
+    tags: ['deploy_*@*']
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 解析标签
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          slot="${tag%%@*}"        # deploy_1
+          stamp="${tag##*@}"       # 20261122002222
+          echo "ENV_SLOT=$slot" >> "$GITHUB_ENV"
+          echo "DEPLOY_STAMP=$stamp" >> "$GITHUB_ENV"
+          echo "部署 $tag（槽位 $slot，提交 $GITHUB_SHA）"
+
+      - name: 读环境配置
+        run: |
+          python3 - "$ENV_SLOT" <<'PY' >> "$GITHUB_ENV"
+          import json, sys
+          slot = sys.argv[1]
+          cfg = json.load(open(".flow/deploy.json"))
+          if slot not in cfg:
+              sys.exit(f".flow/deploy.json 里没有槽位 {slot}")
+          for key in ("url", "namespace", "deployment", "image_repo"):
+              print(f"{key.upper()}={cfg[slot].get(key, '')}")
+          PY
+
+      - name: build
+        run: |
+          # 换成本仓库的构建命令；镜像 tag 建议带提交号，便于回滚追溯
+          echo "TODO: build image $IMAGE_REPO:$GITHUB_SHA"
+
+      - name: deploy
+        run: |
+          # 换成本仓库的发布命令；只动本槽位的 namespace/deployment
+          echo "TODO: deploy $IMAGE_REPO:$GITHUB_SHA -> $NAMESPACE/$DEPLOYMENT"
+
+      - name: smoke
+        run: |
+          # 发布后自检；失败就整个 job 失败
+          echo "TODO: curl $URL/healthz"
