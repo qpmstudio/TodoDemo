@@ -1,0 +1,7 @@
+{
+  "runner": "self-hosted",
+  "checks": [
+    {"name": "go", "run": "bash .flow/check.sh go"},
+    {"name": "frontend", "run": "bash .flow/check.sh frontend"}
+  ]
+}

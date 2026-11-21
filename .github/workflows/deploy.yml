@@ -1,0 +1,184 @@
+# 部署 workflow：只认 deploy_<env>@<yyyymmDDHHMMSS> 标签。
+# 环境信息来自仓库 .flow/deploy.json[env]；构建用 self-hosted runner 建 kaniko Job（镜像里没有 docker）。
+name: deploy
+
+on:
+  push:
+    tags: ['deploy_*@*']
+
+permissions:
+  contents: read
+
+# workflow 级 concurrency 拿不到步骤里解析出的槽位，只能按仓库串行；
+# 比按标签串行更保守，能保证同一槽位不会并发。
+concurrency:
+  group: deploy-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: 192.168.3.49:30500
+  BUILD_NS: ci
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 解析标签
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if ! [[ "$tag" =~ ^deploy_[A-Za-z0-9]+@[0-9]{14}$ ]]; then
+            echo "非法部署标签: $tag（应为 deploy_<env>@<yyyymmDDHHMMSS>）" >&2
+            exit 1
+          fi
+          slot="${tag%%@*}"        # deploy_1
+          stamp="${tag##*@}"       # 20261122002222
+          echo "ENV_SLOT=$slot" >> "$GITHUB_ENV"
+          echo "DEPLOY_STAMP=$stamp" >> "$GITHUB_ENV"
+          echo "部署 $tag（槽位 $slot，提交 $GITHUB_SHA）"
+
+      - name: 读环境配置
+        run: |
+          set -euo pipefail
+          python3 - "$ENV_SLOT" <<'PY' >> "$GITHUB_ENV"
+          import json, sys
+          slot = sys.argv[1]
+          cfg = json.load(open(".flow/deploy.json"))
+          if slot not in cfg:
+              sys.exit(f".flow/deploy.json 里没有槽位 {slot}")
+          for key in ("url", "namespace", "deployment", "image_repo"):
+              print(f"{key.upper()}={cfg[slot].get(key, '')}")
+          PY
+          : "${URL:?deploy.json 缺 url}"
+          : "${NAMESPACE:?deploy.json 缺 namespace}"
+          : "${DEPLOYMENT:?deploy.json 缺 deployment}"
+          : "${IMAGE_REPO:?deploy.json 缺 image_repo}"
+
+      - name: build（kaniko Job 推私有仓库）
+        run: |
+          set -euo pipefail
+          SHORT_SHA=$(git rev-parse --short=12 HEAD)
+          IMAGE="${IMAGE_REPO}:${SHORT_SHA}"
+          KANIKO_JOB="kaniko-tododemo-${DEPLOY_STAMP}"
+          echo "SHORT_SHA=$SHORT_SHA" >> "$GITHUB_ENV"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          echo "KANIKO_JOB=$KANIKO_JOB" >> "$GITHUB_ENV"
+          echo "构建 $IMAGE"
+
+          # kaniko 会把基础镜像解到 / 并删除镜像之外的文件，所以 context 必须放在挂载卷
+          # （emptyDir）上，而且构建要放在独立 Job 里，不能碰 runner 自己的文件系统。
+          kubectl -n "$BUILD_NS" delete job "$KANIKO_JOB" --ignore-not-found
+
+          cat > /tmp/kaniko-job.yaml <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${KANIKO_JOB}
+            namespace: ${BUILD_NS}
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 900
+            ttlSecondsAfterFinished: 86400
+            template:
+              spec:
+                restartPolicy: Never
+                initContainers:
+                  - name: prep
+                    image: ${REGISTRY}/actions-runner:2.338.2
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/bash", "-c"]
+                    args:
+                      - |
+                        set -euo pipefail
+                        git clone --depth 1 https://github.com/${GITHUB_REPOSITORY}.git /workspace/src
+                        cd /workspace/src
+                        git fetch --depth 1 origin ${GITHUB_SHA}
+                        git checkout -q FETCH_HEAD
+                        # index.docker.io 的 TLS 在本网络会被掐断，同一个仓库用 registry-1.docker.io 可达。
+                        sed -i -E 's#^FROM (node|golang|alpine):#FROM registry-1.docker.io/library/\1:#' Dockerfile
+                        # proxy.golang.org 在本网络 TLS1.3 失败，换 goproxy.cn。
+                        sed -i '/^FROM registry-1.docker.io\/library\/golang:/a ENV GOPROXY=https://goproxy.cn' Dockerfile
+                        grep -nE '^FROM|GOPROXY' Dockerfile
+                    volumeMounts:
+                      - {name: workspace, mountPath: /workspace}
+                containers:
+                  - name: kaniko
+                    image: ${REGISTRY}/actions-runner:2.338.2
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/bash", "-c"]
+                    args:
+                      - |
+                        set -euo pipefail
+                        /usr/local/bin/kaniko-executor \
+                          --context=dir:///workspace/src \
+                          --dockerfile=/workspace/src/Dockerfile \
+                          --destination=${IMAGE} \
+                          --insecure-registry=${REGISTRY} \
+                          --cache=false --force --verbosity=info
+                    resources:
+                      limits: {cpu: "2", memory: 4Gi}
+                      requests: {cpu: 500m, memory: 512Mi}
+                    volumeMounts:
+                      - {name: workspace, mountPath: /workspace}
+                volumes:
+                  - name: workspace
+                    emptyDir: {}
+          EOF
+
+          kubectl apply -f /tmp/kaniko-job.yaml
+
+          if ! kubectl -n "$BUILD_NS" wait --for=condition=complete "job/$KANIKO_JOB" --timeout=600s; then
+            echo '--- kaniko job failed, logs ---'
+            kubectl -n "$BUILD_NS" logs "job/$KANIKO_JOB" --tail=200 || true
+            kubectl -n "$BUILD_NS" describe "job/$KANIKO_JOB" | tail -20 || true
+            exit 1
+          fi
+          kubectl -n "$BUILD_NS" logs "job/$KANIKO_JOB" --tail=10 || true
+
+      - name: deploy（kubectl set image）
+        run: |
+          set -euo pipefail
+          kubectl -n "$NAMESPACE" set image "deployment/$DEPLOYMENT" "$DEPLOYMENT=$IMAGE"
+          kubectl -n "$NAMESPACE" annotate --overwrite "deployment/$DEPLOYMENT" \
+            flow/deploy-tag="$GITHUB_REF_NAME" flow/deploy-revision="$GITHUB_SHA"
+          kubectl -n "$NAMESPACE" rollout status "deployment/$DEPLOYMENT" --timeout=180s
+
+          running=$(kubectl -n "$NAMESPACE" get "deployment/$DEPLOYMENT" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "deployment image: $running"
+          [ "$running" = "$IMAGE" ]
+
+      - name: smoke（health + 401）
+        run: |
+          set -euo pipefail
+          # 轮询等新 Pod 的端点就绪
+          code=""
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$URL/health" || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          if [ "$code" != "200" ]; then
+            echo "health 未就绪: $URL/health -> ${code:-no-response}" >&2
+            kubectl -n "$NAMESPACE" get pods -l "app=$DEPLOYMENT" -o wide || true
+            exit 1
+          fi
+
+          # 真实健康检查：/healthz 会被 SPA 兜底成 index.html，只看 200 没有意义，
+          # 所以这里同时校验 /health 的 JSON 体。
+          body=$(curl -fsS --max-time 5 "$URL/health")
+          echo "health: $body"
+          echo "$body" | grep -q '"status":"ok"'
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$URL/healthz")
+          echo "healthz: $code"
+          [ "$code" = "200" ]
+
+          code=$(curl -s -o /tmp/todos.out -w '%{http_code}' --max-time 5 "$URL/api/v1/todos")
+          echo "api/v1/todos: $code $(head -c 120 /tmp/todos.out)"
+          [ "$code" = "401" ]
