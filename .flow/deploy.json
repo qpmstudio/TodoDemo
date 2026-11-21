@@ -1,8 +1,8 @@
 {
   "deploy_1": {
-    "url": "",
-    "namespace": "",
-    "deployment": "",
-    "image_repo": ""
+    "url": "http://tododemo.tododemo-dev.svc.cluster.local:8080",
+    "namespace": "tododemo-dev",
+    "deployment": "tododemo",
+    "image_repo": "192.168.3.49:30500/tododemo"
   }
 }
