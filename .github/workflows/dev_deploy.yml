@@ -1,0 +1,127 @@
+name: Local K8s Deploy
+
+on:
+  push:
+    branches:
+      - dev
+
+env:
+  REGISTRY: 192.168.3.49:30500
+  IMAGE_NAME: 192.168.3.49:30500/tododemo
+  BUILD_NS: ci
+  KANIKO_JOB: kaniko-tododemo
+
+jobs:
+  build-and-deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Image with kaniko Job
+        run: |
+          set -euo pipefail
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+
+          # kaniko unpacks base images over its own root filesystem and deletes files that
+          # are not part of the image, so the build context MUST live on a mounted volume
+          # (emptyDir), never on an overlay fs. That is also why the build runs in its own
+          # Job instead of inside the runner pod: kaniko must not touch the runner's fs.
+          kubectl -n "$BUILD_NS" delete job "$KANIKO_JOB" --ignore-not-found
+
+          cat > /tmp/kaniko-job.yaml <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ${KANIKO_JOB}
+            namespace: ${BUILD_NS}
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 900
+            template:
+              spec:
+                restartPolicy: Never
+                initContainers:
+                  - name: prep
+                    image: ${REGISTRY}/actions-runner:2.338.2
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/bash", "-c"]
+                    args:
+                      - |
+                        set -euo pipefail
+                        git clone --depth 1 https://github.com/${GITHUB_REPOSITORY}.git /workspace/src
+                        cd /workspace/src
+                        git fetch --depth 1 origin ${GITHUB_SHA}
+                        git checkout -q FETCH_HEAD
+                        # index.docker.io TLS is cut on this network; the same registry is
+                        # reachable as registry-1.docker.io.
+                        sed -i -E 's#^FROM (node|golang|alpine):#FROM registry-1.docker.io/library/\1:#' Dockerfile
+                        # proxy.golang.org fails on TLS1.3 here; goproxy.cn works.
+                        sed -i '/^FROM registry-1.docker.io\/library\/golang:/a ENV GOPROXY=https://goproxy.cn' Dockerfile
+                        grep -nE '^FROM|GOPROXY' Dockerfile
+                    volumeMounts:
+                      - {name: workspace, mountPath: /workspace}
+                containers:
+                  - name: kaniko
+                    image: ${REGISTRY}/actions-runner:2.338.2
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/bash", "-c"]
+                    args:
+                      - |
+                        set -euo pipefail
+                        /usr/local/bin/kaniko-executor \
+                          --context=dir:///workspace/src \
+                          --dockerfile=/workspace/src/Dockerfile \
+                          --destination=${IMAGE_NAME}:dev-${SHORT_SHA} \
+                          --destination=${IMAGE_NAME}:dev-latest \
+                          --insecure-registry=${REGISTRY} \
+                          --cache=false --force --verbosity=info
+                    resources:
+                      limits: {cpu: "2", memory: 4Gi}
+                      requests: {cpu: 500m, memory: 512Mi}
+                    volumeMounts:
+                      - {name: workspace, mountPath: /workspace}
+                volumes:
+                  - name: workspace
+                    emptyDir: {}
+          EOF
+
+          kubectl apply -f /tmp/kaniko-job.yaml
+
+          if ! kubectl -n "$BUILD_NS" wait --for=condition=complete "job/$KANIKO_JOB" --timeout=600s; then
+            echo '--- kaniko job failed, logs ---'
+            kubectl -n "$BUILD_NS" logs "job/$KANIKO_JOB" --tail=200 || true
+            kubectl -n "$BUILD_NS" describe "job/$KANIKO_JOB" | tail -20 || true
+            exit 1
+          fi
+          kubectl -n "$BUILD_NS" logs "job/$KANIKO_JOB" --tail=20 || true
+
+      - name: Deploy to K8s
+        run: |
+          set -euo pipefail
+          # Pin the immutable per-commit tag: a mutable :dev-latest does not change
+          # the pod template, so the Deployment would never roll on a new build.
+          sed "s#:dev-latest#:dev-${SHORT_SHA}#g" deploy/k8s/deployment.yaml | kubectl apply -n tododemo-dev -f -
+          kubectl -n tododemo-dev set image deployment/tododemo tododemo="${IMAGE_NAME}:dev-${SHORT_SHA}"
+          kubectl rollout status deployment/tododemo -n tododemo-dev --timeout=180s
+          kubectl -n tododemo-dev get deploy tododemo -o json | grep -o 'tododemo:dev-[a-z0-9]*' | head -1
+
+      - name: Health Check
+        run: |
+          kubectl -n tododemo-dev port-forward svc/tododemo 18081:8080 >/tmp/pf.log 2>&1 &
+          PF_PID=$!
+          trap 'kill $PF_PID 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:18081/health; then
+              echo
+              echo "health OK"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo '--- port-forward log ---'
+          cat /tmp/pf.log
+          echo '--- pod state ---'
+          kubectl -n tododemo-dev get pods -l app=tododemo -o wide
+          exit 1
