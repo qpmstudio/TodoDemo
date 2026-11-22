@@ -9,11 +9,13 @@ export function Header() {
       <div className="header__user">
         {user && (
           <>
-            <img
-              src={user.github_avatar_url}
-              alt={user.display_name}
-              className="header__avatar"
-            />
+            {user.github_avatar_url && (
+              <img
+                src={user.github_avatar_url}
+                alt={user.display_name}
+                className="header__avatar"
+              />
+            )}
             <span className="header__name">{user.display_name}</span>
             <button onClick={logout} className="header__logout-btn">
               Logout

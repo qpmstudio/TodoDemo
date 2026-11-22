@@ -1,70 +1,10 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState } from 'react';
 import { Navigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { fetchAuthProviders, login, type AuthProviders } from '../api/client';
-
-interface FormProps {
-  email: string;
-  onEmailChange: (email: string) => void;
-  onSuccess: () => void;
-}
-
-function LoginForm({ email, onEmailChange, onSuccess }: FormProps) {
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setSubmitting(true);
-    try {
-      await login(email, password);
-      onSuccess();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <form className="auth-form" onSubmit={handleSubmit}>
-      {error && <div className="auth-form__error">{error}</div>}
-      <div className="auth-form__field">
-        <label htmlFor="login-email">Email</label>
-        <input
-          id="login-email"
-          type="email"
-          value={email}
-          onChange={(e) => onEmailChange(e.target.value)}
-          required
-          autoComplete="email"
-          placeholder="you@example.com"
-        />
-      </div>
-      <div className="auth-form__field">
-        <label htmlFor="login-password">Password</label>
-        <input
-          id="login-password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          autoComplete="current-password"
-          placeholder="Enter your password"
-        />
-      </div>
-      <button type="submit" className="auth-form__button" disabled={submitting}>
-        {submitting ? 'Signing in...' : 'Sign In'}
-      </button>
-    </form>
-  );
-}
+import { fetchAuthProviders, type AuthProviders } from '../api/client';
 
 export function LoginPage() {
-  const { user, loading, checkAuth } = useAuth();
-  const [email, setEmail] = useState('');
+  const { user, loading } = useAuth();
   const [providers, setProviders] = useState<AuthProviders | null>(null);
   const [searchParams] = useSearchParams();
   const oauthError = searchParams.get('error');
@@ -77,7 +17,7 @@ export function LoginPage() {
         if (!cancelled) setProviders(result);
       })
       .catch(() => {
-        if (!cancelled) setProviders({ github: false, zitadel: false });
+        if (!cancelled) setProviders({ zitadel: false });
       });
     return () => {
       cancelled = true;
@@ -95,10 +35,6 @@ export function LoginPage() {
   if (user) {
     return <Navigate to="/todos" replace />;
   }
-
-  const handleSuccess = () => {
-    checkAuth();
-  };
 
   return (
     <div className="login-page">
@@ -132,30 +68,18 @@ export function LoginPage() {
           </div>
         )}
 
-        <LoginForm email={email} onEmailChange={setEmail} onSuccess={handleSuccess} />
+        {providers?.zitadel ? (
+          <a href="/auth/zitadel/login" className="login-card__button login-card__button--zitadel">
+            Login with ZITADEL
+          </a>
+        ) : (
+          <p className="login-card__hint">Sign-in is temporarily unavailable.</p>
+        )}
 
         {providers?.zitadel_register_url && (
           <p className="login-card__register">
             New to TodoDemo? <a href={providers.zitadel_register_url}>Create an account</a>
           </p>
-        )}
-
-        {(providers?.github !== false || providers?.zitadel) && (
-          <div className="auth-separator">
-            <span>or</span>
-          </div>
-        )}
-
-        {providers?.github !== false && (
-          <a href="/auth/github/login" className="login-card__button login-card__button--github">
-            Login with GitHub
-          </a>
-        )}
-
-        {providers?.zitadel && (
-          <a href="/auth/zitadel/login" className="login-card__button login-card__button--zitadel">
-            Login with ZITADEL
-          </a>
         )}
       </div>
     </div>
