@@ -9,7 +9,6 @@ import { AuthContext } from '../context/AuthContext';
 vi.mock('../api/client', () => ({
   fetchAuthProviders: vi.fn().mockResolvedValue({ github: true, zitadel: false }),
   login: vi.fn(),
-  register: vi.fn(),
   fetchMe: vi.fn(),
   logout: vi.fn(),
   fetchTodos: vi.fn(),
@@ -18,7 +17,7 @@ vi.mock('../api/client', () => ({
   deleteTodo: vi.fn(),
 }));
 
-import { fetchAuthProviders, login, register } from '../api/client';
+import { fetchAuthProviders, login } from '../api/client';
 
 function renderWithAuth(user: any = null, loading = false, initialEntry = '/') {
   const mockAuth = {
@@ -42,11 +41,12 @@ describe('LoginPage', () => {
     vi.clearAllMocks();
   });
 
-  it('renders both tabs', () => {
+  it('does not render a self-service register form', () => {
     renderWithAuth(null, false);
 
-    expect(screen.getByRole('button', { name: 'Login' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Register' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Register' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Create Account' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Confirm Password')).not.toBeInTheDocument();
   });
 
   it('shows GitHub login button', () => {
@@ -72,36 +72,35 @@ describe('LoginPage', () => {
     expect(screen.queryByText('Login with ZITADEL')).not.toBeInTheDocument();
   });
 
+  it('links account creation to the ZITADEL register page', async () => {
+    vi.mocked(fetchAuthProviders).mockResolvedValueOnce({
+      github: true,
+      zitadel: true,
+      zitadel_register_url: 'https://auth.example.com/ui/v2/login/register',
+    });
+    renderWithAuth(null, false);
+
+    const link = await screen.findByText('Create an account');
+    expect(link).toHaveAttribute('href', 'https://auth.example.com/ui/v2/login/register');
+  });
+
+  it('hides the account creation link when ZITADEL is not configured', async () => {
+    renderWithAuth(null, false);
+
+    await waitFor(() => expect(fetchAuthProviders).toHaveBeenCalled());
+    expect(screen.queryByText('Create an account')).not.toBeInTheDocument();
+  });
+
   it('shows an error banner after a cancelled ZITADEL login', () => {
     renderWithAuth(null, false, '/?error=zitadel');
 
     expect(screen.getByRole('alert')).toHaveTextContent('ZITADEL sign-in did not complete');
   });
 
-  it('shows login tab active by default', () => {
-    renderWithAuth(null, false);
+  it('shows an error banner when the email is not verified', () => {
+    renderWithAuth(null, false, '/?error=email_not_verified');
 
-    const loginTab = screen.getByRole('button', { name: 'Login' });
-    expect(loginTab.className).toContain('auth-tabs__tab--active');
-  });
-
-  it('switches to register tab and preserves email', async () => {
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    // Type email in login form
-    const emailInput = screen.getByLabelText('Email');
-    await user.type(emailInput, 'test@example.com');
-
-    // Switch to register tab
-    const registerTab = screen.getByRole('button', { name: 'Register' });
-    await user.click(registerTab);
-
-    // Email should be preserved
-    await waitFor(() => {
-      const emailInputs = screen.getAllByDisplayValue('test@example.com');
-      expect(emailInputs.length).toBeGreaterThan(0);
-    });
+    expect(screen.getByRole('alert')).toHaveTextContent('Your email is not verified yet');
   });
 
   it('shows loading spinner when loading', () => {
@@ -129,22 +128,9 @@ describe('LoginPage', () => {
   it('shows login form fields', () => {
     renderWithAuth(null, false);
 
-    // Use getAllByRole since tab and submit button both reference these names
     expect(screen.getByLabelText('Email')).toBeInTheDocument();
     expect(screen.getByLabelText('Password')).toBeInTheDocument();
-    const buttons = screen.getAllByRole('button', { name: 'Sign In' });
-    expect(buttons.length).toBeGreaterThan(0);
-  });
-
-  it('shows register form with confirm password when tab is clicked', async () => {
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    const registerTab = screen.getByRole('button', { name: 'Register' });
-    await user.click(registerTab);
-
-    expect(screen.getByLabelText('Confirm Password')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Create Account' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sign In' })).toBeInTheDocument();
   });
 });
 
@@ -196,91 +182,6 @@ describe('LoginForm', () => {
 
     await waitFor(() => {
       const button = screen.getByRole('button', { name: 'Signing in...' });
-      expect(button).toBeDisabled();
-    });
-  });
-});
-
-describe('RegisterForm', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('calls register API on submit', async () => {
-    const mockUser = { id: '1', github_login: '', github_avatar_url: '', display_name: 'test', created_at: '', updated_at: '' };
-    vi.mocked(register).mockResolvedValueOnce(mockUser);
-
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    // Switch to register tab
-    await user.click(screen.getByRole('button', { name: 'Register' }));
-
-    await user.type(screen.getByLabelText('Email'), 'test@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.type(screen.getByLabelText('Confirm Password'), 'password123');
-    await user.click(screen.getByRole('button', { name: 'Create Account' }));
-
-    await waitFor(() => {
-      expect(register).toHaveBeenCalledWith('test@example.com', 'password123');
-    });
-  });
-
-  it('shows error when passwords do not match', async () => {
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    // Switch to register tab
-    await user.click(screen.getByRole('button', { name: 'Register' }));
-
-    await user.type(screen.getByLabelText('Email'), 'test@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.type(screen.getByLabelText('Confirm Password'), 'different');
-    await user.click(screen.getByRole('button', { name: 'Create Account' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Passwords do not match')).toBeInTheDocument();
-    });
-
-    // register should not have been called
-    expect(register).not.toHaveBeenCalled();
-  });
-
-  it('shows error message on registration failure', async () => {
-    vi.mocked(register).mockRejectedValueOnce(new Error('Email already registered'));
-
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    // Switch to register tab
-    await user.click(screen.getByRole('button', { name: 'Register' }));
-
-    await user.type(screen.getByLabelText('Email'), 'test@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.type(screen.getByLabelText('Confirm Password'), 'password123');
-    await user.click(screen.getByRole('button', { name: 'Create Account' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Email already registered')).toBeInTheDocument();
-    });
-  });
-
-  it('disables button while submitting', async () => {
-    vi.mocked(register).mockImplementationOnce(() => new Promise(() => {})); // never resolves
-
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    // Switch to register tab
-    await user.click(screen.getByRole('button', { name: 'Register' }));
-
-    await user.type(screen.getByLabelText('Email'), 'test@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.type(screen.getByLabelText('Confirm Password'), 'password123');
-    await user.click(screen.getByRole('button', { name: 'Create Account' }));
-
-    await waitFor(() => {
-      const button = screen.getByRole('button', { name: 'Creating account...' });
       expect(button).toBeDisabled();
     });
   });

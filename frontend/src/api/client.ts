@@ -60,6 +60,7 @@ export interface User {
 export interface AuthProviders {
   github: boolean;
   zitadel: boolean;
+  zitadel_register_url?: string;
 }
 
 export async function fetchAuthProviders(): Promise<AuthProviders> {
@@ -129,11 +130,6 @@ async function authRequest<T>(url: string, body: unknown): Promise<T> {
   }
 
   return json;
-}
-
-export async function register(email: string, password: string): Promise<User> {
-  const res = await authRequest<ApiResponse<User>>('/auth/register', { email, password });
-  return res.data!;
 }
 
 export async function login(email: string, password: string): Promise<User> {

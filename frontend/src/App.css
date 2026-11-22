@@ -74,6 +74,16 @@
   background: #2f49b0;
 }
 
+.login-card__register {
+  margin-top: 16px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.login-card__register a {
+  color: var(--primary);
+  font-weight: 500;
+}
+
 /* ── Auth Tabs ── */
 .auth-tabs {
   display: flex;
