@@ -327,6 +327,12 @@
   background: var(--primary);
   color: #fff;
 }
+/* Keep the active tab legible while hovered: the (0,2,0) hover rule above
+   would otherwise repaint it with the neutral secondary background. */
+.todo-filter__tab--active:hover {
+  background: var(--primary-hover);
+  color: #fff;
+}
 
 /* ── Todo List ── */
 .todo-list {
