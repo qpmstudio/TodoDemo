@@ -55,10 +55,23 @@
 .login-card__button:hover {
   background: #1a1f23;
 }
-.login-card__button--github {
+.login-card__button--github,
+.login-card__button--zitadel {
   display: block;
   width: 100%;
   text-align: center;
+}
+
+.login-card__button + .login-card__button {
+  margin-top: 12px;
+}
+
+.login-card__button--zitadel {
+  background: #3b5bdb;
+}
+
+.login-card__button--zitadel:hover {
+  background: #2f49b0;
 }
 
 /* ── Auth Tabs ── */

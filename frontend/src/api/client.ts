@@ -57,6 +57,16 @@ export interface User {
   updated_at: string;
 }
 
+export interface AuthProviders {
+  github: boolean;
+  zitadel: boolean;
+}
+
+export async function fetchAuthProviders(): Promise<AuthProviders> {
+  const res = await request<ApiResponse<AuthProviders>>('/auth/providers');
+  return res.data ?? { github: false, zitadel: false };
+}
+
 export async function fetchMe(): Promise<User> {
   const res = await request<ApiResponse<User>>('/auth/me');
   return res.data!;

@@ -243,6 +243,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 // setJWTCookie sets the JWT cookie on the response.
 func (h *AuthHandler) setJWTCookie(w http.ResponseWriter, token string) {
+	setJWTCookie(w, token)
+}
+
+// setJWTCookie is shared by every login method so the session cookie keeps the
+// same shape for GitHub, password and ZITADEL logins.
+func setJWTCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "jwt",
 		Value:    token,
@@ -352,6 +358,11 @@ func (h *AuthHandler) getGitHubUser(accessToken string) (*githubUser, error) {
 }
 
 func (h *AuthHandler) createJWT(user *model.User) (string, error) {
+	return createJWT(h.cfg, user)
+}
+
+// createJWT issues the same HS256 session token for every login method.
+func createJWT(cfg *config.Config, user *model.User) (string, error) {
 	claims := jwt.MapClaims{
 		"sub":   user.ID,
 		"login": user.GitHubLogin,
@@ -360,7 +371,7 @@ func (h *AuthHandler) createJWT(user *model.User) (string, error) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(h.cfg.JWTSecret))
+	return token.SignedString([]byte(cfg.JWTSecret))
 }
 
 func generateRandomState() (string, error) {

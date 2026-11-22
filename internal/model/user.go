@@ -10,6 +10,8 @@ type User struct {
 	GitHubAvatarURL string    `json:"github_avatar_url"`
 	Email           string    `json:"-"`
 	PasswordHash    string    `json:"-"`
+	ZitadelSub      *string   `json:"-"`
+	AuthProvider    string    `json:"auth_provider"`
 	DisplayName     string    `json:"display_name"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`

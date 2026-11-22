@@ -18,6 +18,21 @@ type Config struct {
 	FrontendURL        string
 	GitHubRedirectURL  string
 	LogLevel           string
+
+	// ZITADEL is the OIDC provider for the hosted login. It is optional: when
+	// ZITADEL_CLIENT_ID is empty the login page hides the ZITADEL button and
+	// /auth/zitadel/login returns 503.
+	ZitadelIssuer        string
+	ZitadelClientID      string
+	ZitadelClientSecret  string
+	ZitadelRedirectURL   string
+	ZitadelPostLogoutURL string
+}
+
+// ZitadelEnabled reports whether ZITADEL login has enough configuration to
+// start an authorization request.
+func (c *Config) ZitadelEnabled() bool {
+	return c.ZitadelIssuer != "" && c.ZitadelClientID != "" && c.ZitadelRedirectURL != ""
 }
 
 // Load reads configuration from environment variables.
@@ -31,6 +46,12 @@ func Load() (*Config, error) {
 		FrontendURL:        getEnv("FRONTEND_URL", "http://localhost:5173"),
 		GitHubRedirectURL:  getEnv("GITHUB_REDIRECT_URL", "http://localhost:8080/auth/github/callback"),
 		LogLevel:           getEnv("LOG_LEVEL", "debug"),
+
+		ZitadelIssuer:        getEnv("ZITADEL_ISSUER", "https://auth.qpmstudio.dpdns.org"),
+		ZitadelClientID:      os.Getenv("ZITADEL_CLIENT_ID"),
+		ZitadelClientSecret:  os.Getenv("ZITADEL_CLIENT_SECRET"),
+		ZitadelRedirectURL:   getEnv("ZITADEL_REDIRECT_URL", "http://localhost:8080/auth/zitadel/callback"),
+		ZitadelPostLogoutURL: os.Getenv("ZITADEL_POST_LOGOUT_URL"),
 	}
 
 	// Validate required config
@@ -65,6 +86,22 @@ func (c *Config) WarnDeploymentConfig(logger *slog.Logger) {
 
 	warnLocalhostURL(logger, "FRONTEND_URL", c.FrontendURL)
 	warnLocalhostURL(logger, "GITHUB_REDIRECT_URL", c.GitHubRedirectURL)
+
+	if c.ZitadelClientID == "" {
+		logger.Info("ZITADEL login not configured; /auth/zitadel/login will return 503",
+			"hint", "set ZITADEL_CLIENT_ID (and optionally ZITADEL_CLIENT_SECRET)")
+		return
+	}
+	if c.ZitadelRedirectURL == "" {
+		logger.Warn("ZITADEL_CLIENT_ID is set but ZITADEL_REDIRECT_URL is empty; ZITADEL login stays disabled")
+	}
+	if c.ZitadelClientSecret == "" {
+		logger.Warn("ZITADEL_CLIENT_SECRET is empty; using the public-client PKCE flow")
+	}
+	warnLocalhostURL(logger, "ZITADEL_REDIRECT_URL", c.ZitadelRedirectURL)
+	if c.ZitadelPostLogoutURL != "" {
+		warnLocalhostURL(logger, "ZITADEL_POST_LOGOUT_URL", c.ZitadelPostLogoutURL)
+	}
 }
 
 // warnLocalhostURL warns when a configured URL is loopback or not absolute.
