@@ -1,4 +1,4 @@
-# 由 ci_init.py 生成（.flow/ci.json → ci.yml）；setup-* 步骤为适配裸 self-hosted runner 手动追加。
+# 基础由 ci_init.py 生成（.flow/ci.json → ci.yml）；setup-* 步骤与 diff-hygiene job 为手动追加，重新生成前请保留。
 name: CI
 on:
   pull_request:

@@ -31,11 +31,13 @@ type fakeZitadelStore struct {
 	calls int
 	err   error
 
-	claimUser  *model.User
-	claimErr   error
-	claimCalls int
-	claimSub   string
-	claimEmail string
+	claimUser    *model.User
+	claimMatches int
+	claimErr     error
+	claimCalls   int
+	claimSub     string
+	claimEmail   string
+	claimDisplay string
 }
 
 func newFakeZitadelStore() *fakeZitadelStore {
@@ -68,16 +70,26 @@ func (f *fakeZitadelStore) UpsertUserByZitadelSub(ctx context.Context, sub, emai
 	return user, nil
 }
 
-func (f *fakeZitadelStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email string) (*model.User, error) {
+func (f *fakeZitadelStore) GetUserByZitadelSub(ctx context.Context, sub string) (*model.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.users[sub], nil
+}
+
+func (f *fakeZitadelStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName string) (*model.User, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.claimCalls++
 	f.claimSub = sub
 	f.claimEmail = email
+	f.claimDisplay = displayName
 	if f.claimErr != nil {
-		return nil, f.claimErr
+		return nil, 0, f.claimErr
 	}
-	return f.claimUser, nil
+	if f.claimUser == nil {
+		return nil, f.claimMatches, nil
+	}
+	return f.claimUser, 1, nil
 }
 
 func (f *fakeZitadelStore) savedUsers() int {
@@ -444,8 +456,11 @@ func TestZitadelCallbackCreatesThenReusesUser(t *testing.T) {
 		}
 	}
 
-	if store.callCount() != 2 {
-		t.Errorf("upsert calls = %d, want 2 (one per login)", store.callCount())
+	if store.callCount() != 1 {
+		t.Errorf("insert calls = %d, want 1 (second login reuses the sub)", store.callCount())
+	}
+	if store.claimCalls != 1 {
+		t.Errorf("claim calls = %d, want 1 (only when no sub is linked yet)", store.claimCalls)
 	}
 	if store.savedUsers() != 1 {
 		t.Errorf("stored users = %d, want 1", store.savedUsers())
@@ -580,9 +595,8 @@ func TestZitadelCallbackEmailConflict(t *testing.T) {
 func TestZitadelCallbackAdoptsUnlinkedLocalAccount(t *testing.T) {
 	f := newFakeZitadel(t)
 	h, store := newTestZitadelHandler(t, f)
-	// Simulate a local password account that already owns this email: the
-	// upsert conflicts because TodoDemo does not merge accounts by email.
-	store.err = repository.ErrEmailConflict
+	// A pre-ZITADEL password row already owns this email; ZITADEL proved the
+	// user owns it, so the row is adopted instead of duplicated.
 	store.claimUser = &model.User{
 		ID:           "local-adopted-1",
 		Email:        "zitadel@example.com",
@@ -603,6 +617,12 @@ func TestZitadelCallbackAdoptsUnlinkedLocalAccount(t *testing.T) {
 	if store.claimSub != "zitadel-sub-1" || store.claimEmail != "zitadel@example.com" {
 		t.Errorf("claim args = (%q, %q)", store.claimSub, store.claimEmail)
 	}
+	if store.claimDisplay != "ZITADEL User" {
+		t.Errorf("claim display name = %q", store.claimDisplay)
+	}
+	if store.callCount() != 0 {
+		t.Errorf("insert calls = %d, want 0 when an older row is adopted", store.callCount())
+	}
 	if noJWTCookie(rec.Result()) {
 		t.Error("adopted account should receive a session cookie")
 	}
@@ -611,7 +631,6 @@ func TestZitadelCallbackAdoptsUnlinkedLocalAccount(t *testing.T) {
 func TestZitadelCallbackClaimErrorIsInternal(t *testing.T) {
 	f := newFakeZitadel(t)
 	h, store := newTestZitadelHandler(t, f)
-	store.err = repository.ErrEmailConflict
 	store.claimErr = errors.New("db down")
 
 	login := doZitadelLogin(t, h, "/auth/zitadel/login")
@@ -623,6 +642,59 @@ func TestZitadelCallbackClaimErrorIsInternal(t *testing.T) {
 	}
 	if !noJWTCookie(rec.Result()) {
 		t.Error("failed account linking must not set a jwt cookie")
+	}
+}
+
+func TestZitadelCallbackAmbiguousUnlinkedAccounts(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	store.claimMatches = 2
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusConflict || errorCode(t, rec) != model.ErrCodeAccountEmailConflict {
+		t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
+	}
+	if !noJWTCookie(rec.Result()) {
+		t.Error("ambiguous email must not set a jwt cookie")
+	}
+	if store.callCount() != 0 {
+		t.Errorf("insert calls = %d, want 0 when adoption is ambiguous", store.callCount())
+	}
+	if store.savedUsers() != 0 {
+		t.Errorf("stored users = %d, want 0", store.savedUsers())
+	}
+}
+
+func TestZitadelCallbackKnownSubSkipsAdoption(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	// The subject is already bound, even though a legacy password row with the
+	// same email also exists: binding it again would violate the sub index.
+	store.users["zitadel-sub-1"] = &model.User{
+		ID:           "local-existing-1",
+		Email:        "zitadel@example.com",
+		DisplayName:  "Existing Account",
+		AuthProvider: "zitadel",
+	}
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if store.claimCalls != 0 {
+		t.Errorf("claim calls = %d, want 0 for an already-linked subject", store.claimCalls)
+	}
+	if store.callCount() != 0 {
+		t.Errorf("insert calls = %d, want 0", store.callCount())
+	}
+	if store.savedUsers() != 1 {
+		t.Errorf("stored users = %d, want 1", store.savedUsers())
 	}
 }
 
