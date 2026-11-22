@@ -14,9 +14,10 @@ type APIError struct {
 
 // Error codes.
 const (
-	ErrCodeUnauthorized    = "UNAUTHORIZED"
-	ErrCodeConflict        = "CONFLICT"
-	ErrCodeNotFound        = "NOT_FOUND"
-	ErrCodeValidationError = "VALIDATION_ERROR"
-	ErrCodeInternalError   = "INTERNAL_ERROR"
+	ErrCodeUnauthorized       = "UNAUTHORIZED"
+	ErrCodeConflict           = "CONFLICT"
+	ErrCodeNotFound           = "NOT_FOUND"
+	ErrCodeValidationError    = "VALIDATION_ERROR"
+	ErrCodeInternalError      = "INTERNAL_ERROR"
+	ErrCodeServiceUnavailable = "SERVICE_UNAVAILABLE"
 )
