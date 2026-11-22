@@ -3,26 +3,18 @@ package handler
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/DevenWen/TodoDemo/internal/config"
-	"github.com/DevenWen/TodoDemo/internal/logging"
 	"github.com/DevenWen/TodoDemo/internal/middleware"
 	"github.com/DevenWen/TodoDemo/internal/model"
 	"github.com/DevenWen/TodoDemo/internal/repository"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"golang.org/x/crypto/bcrypt"
 )
 
-// AuthHandler handles OAuth authentication endpoints.
+// AuthHandler keeps the session endpoints. Signing in and creating accounts
+// belong to ZITADEL; TodoDemo only mints and clears its own session cookie.
 type AuthHandler struct {
 	cfg *config.Config
 }
@@ -32,132 +24,10 @@ func NewAuthHandler(cfg *config.Config) *AuthHandler {
 	return &AuthHandler{cfg: cfg}
 }
 
-// GitHubLogin redirects the user to GitHub for OAuth authorization.
-func (h *AuthHandler) GitHubLogin(w http.ResponseWriter, r *http.Request) {
-	// Without an OAuth app there is nothing to authorize against. Redirecting
-	// with an empty client_id sends the browser to a GitHub 404, so fail fast
-	// with an actionable error instead.
-	if h.cfg.GitHubClientID == "" || h.cfg.GitHubClientSecret == "" {
-		logging.FromContext(r.Context()).WarnContext(r.Context(),
-			"github oauth login rejected: OAuth app not configured",
-			"client_id_set", h.cfg.GitHubClientID != "",
-			"client_secret_set", h.cfg.GitHubClientSecret != "",
-		)
-		writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeServiceUnavailable,
-			"GitHub login is not configured", nil)
-		return
-	}
-
-	state, err := generateRandomState()
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to generate state", err)
-		return
-	}
-
-	http.SetCookie(w, &http.Cookie{
-		Name:     "oauth_state",
-		Value:    state,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   300, // 5 minutes
-	})
-
-	query := url.Values{
-		"client_id":    {h.cfg.GitHubClientID},
-		"redirect_uri": {h.cfg.GitHubRedirectURL},
-		"scope":        {"read:user"},
-		"state":        {state},
-	}
-	authURL := "https://github.com/login/oauth/authorize?" + query.Encode()
-
-	http.Redirect(w, r, authURL, http.StatusFound)
-}
-
-// GitHubCallback handles the OAuth callback from GitHub.
-func (h *AuthHandler) GitHubCallback(w http.ResponseWriter, r *http.Request) {
-	// Verify state
-	stateCookie, err := r.Cookie("oauth_state")
-	if err != nil {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Missing state cookie", err)
-		return
-	}
-
-	queryState := r.URL.Query().Get("state")
-	if queryState == "" || queryState != stateCookie.Value {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Invalid state parameter", nil)
-		return
-	}
-
-	// Clear the state cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "oauth_state",
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-	})
-
-	// Exchange code for access token
-	code := r.URL.Query().Get("code")
-	if code == "" {
-		writeError(w, r, http.StatusBadRequest, model.ErrCodeValidationError, "Missing authorization code", nil)
-		return
-	}
-
-	accessToken, err := h.exchangeCodeForToken(code)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to exchange code for token: "+err.Error(), err)
-		return
-	}
-
-	// Get GitHub user info
-	githubUser, err := h.getGitHubUser(accessToken)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to get GitHub user info: "+err.Error(), err)
-		return
-	}
-
-	// Upsert user in database
-	gitHubID := githubUser.ID
-	user := &model.User{
-		GitHubID:        &gitHubID,
-		GitHubLogin:     githubUser.Login,
-		GitHubAvatarURL: githubUser.AvatarURL,
-		DisplayName:     githubUser.Name,
-	}
-	if user.DisplayName == "" {
-		user.DisplayName = githubUser.Login
-	}
-
-	if err := repository.UpsertUser(r.Context(), user); err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to save user", err)
-		return
-	}
-
-	// Create JWT
-	jwtToken, err := h.createJWT(user)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create JWT", err)
-		return
-	}
-
-	// Set JWT cookie
-	h.setJWTCookie(w, jwtToken)
-
-	// Redirect to frontend
-	http.Redirect(w, r, h.cfg.FrontendURL+"/todos", http.StatusFound)
-}
-
-type authRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
-
-// Register handles email + password registration.
-// Register is retired: account creation and email verification now happen in
-// ZITADEL. The route stays registered so old clients get an explicit answer
-// instead of a confusing 404, but it never creates a local user.
+// Register handles the retired email + password registration endpoint.
+// Account creation and email verification now happen in ZITADEL. The route
+// stays registered so old clients get an explicit answer instead of a
+// confusing 404, but it never creates a local user.
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	message := "Self-service registration is disabled; create your account with ZITADEL"
 	if registerURL := h.cfg.RegisterURL(); registerURL != "" {
@@ -166,37 +36,15 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	writeError(w, r, http.StatusGone, model.ErrCodeRegistrationMoved, message, nil)
 }
 
-// Login handles email + password login.
+// Login handles the retired email + password login endpoint. ZITADEL is the
+// only way in; existing password hashes stay in the database but can no longer
+// start a session.
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	var req authRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password", err)
-		return
+	message := "Email and password sign-in is disabled; sign in with ZITADEL"
+	if verifyURL := h.cfg.VerifyURL(); verifyURL != "" {
+		message = "Email and password sign-in is disabled; sign in with ZITADEL (or open " + verifyURL + ")"
 	}
-
-	// Get user by email
-	user, err := repository.GetUserByEmail(r.Context(), req.Email)
-	if err != nil {
-		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password", err)
-		return
-	}
-
-	// Compare password
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		writeError(w, r, http.StatusUnauthorized, model.ErrCodeUnauthorized, "Invalid email or password", err)
-		return
-	}
-
-	// Create JWT and set cookie
-	jwtToken, err := h.createJWT(user)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create JWT", err)
-		return
-	}
-
-	h.setJWTCookie(w, jwtToken)
-
-	writeJSON(w, http.StatusOK, user)
+	writeError(w, r, http.StatusGone, model.ErrCodeLoginMoved, message, nil)
 }
 
 // setJWTCookie sets the JWT cookie on the response.
@@ -204,8 +52,8 @@ func (h *AuthHandler) setJWTCookie(w http.ResponseWriter, token string) {
 	setJWTCookie(w, token)
 }
 
-// setJWTCookie is shared by every login method so the session cookie keeps the
-// same shape for GitHub, password and ZITADEL logins.
+// setJWTCookie is shared by the ZITADEL callback and tests so the session
+// cookie keeps the same shape everywhere.
 func setJWTCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "jwt",
@@ -242,88 +90,15 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, user)
 }
 
-func (h *AuthHandler) exchangeCodeForToken(code string) (string, error) {
-	data := url.Values{
-		"client_id":     {h.cfg.GitHubClientID},
-		"client_secret": {h.cfg.GitHubClientSecret},
-		"code":          {code},
-		"redirect_uri":  {h.cfg.GitHubRedirectURL},
-	}
-
-	req, err := http.NewRequest("POST", "https://github.com/login/oauth/access_token", strings.NewReader(data.Encode()))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		AccessToken      string `json:"access_token"`
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-
-	if result.Error != "" {
-		return "", fmt.Errorf("github oauth error: %s - %s", result.Error, result.ErrorDescription)
-	}
-
-	return result.AccessToken, nil
-}
-
-type githubUser struct {
-	ID        int64  `json:"id"`
-	Login     string `json:"login"`
-	Name      string `json:"name"`
-	AvatarURL string `json:"avatar_url"`
-}
-
-func (h *AuthHandler) getGitHubUser(accessToken string) (*githubUser, error) {
-	req, err := http.NewRequest("GET", "https://api.github.com/user", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("github api error: %d - %s", resp.StatusCode, string(body))
-	}
-
-	var user githubUser
-	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-		return nil, err
-	}
-
-	return &user, nil
-}
-
 func (h *AuthHandler) createJWT(user *model.User) (string, error) {
 	return createJWT(h.cfg, user)
 }
 
-// createJWT issues the same HS256 session token for every login method.
+// createJWT issues the HS256 session token for a ZITADEL login.
 func createJWT(cfg *config.Config, user *model.User) (string, error) {
 	claims := jwt.MapClaims{
 		"sub":   user.ID,
-		"login": user.GitHubLogin,
+		"login": user.DisplayName,
 		"iat":   time.Now().Unix(),
 		"exp":   time.Now().Add(7 * 24 * time.Hour).Unix(),
 	}
@@ -338,14 +113,4 @@ func generateRandomState() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// Helper functions for writing responses
-// isUniqueViolation checks if the error is a PostgreSQL unique constraint violation.
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505"
-	}
-	return false
 }

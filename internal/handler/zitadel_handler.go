@@ -334,10 +334,10 @@ func (h *ZitadelHandler) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 // Providers reports which login methods are available. It is registered as a
-// public endpoint so the login page can hide unconfigured providers.
+// public endpoint so the login page can hide unconfigured providers. ZITADEL
+// is the only entry: TodoDemo no longer offers password or GitHub sign-in.
 func (h *ZitadelHandler) Providers(w http.ResponseWriter, r *http.Request) {
 	providers := map[string]any{
-		"github":  h.cfg.GitHubClientID != "" && h.cfg.GitHubClientSecret != "",
 		"zitadel": h.cfg.ZitadelEnabled(),
 	}
 	if h.cfg.ZitadelEnabled() {

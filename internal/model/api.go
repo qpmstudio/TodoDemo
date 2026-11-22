@@ -36,6 +36,7 @@ const (
 	ErrCodeAccountEmailConflict = "ACCOUNT_EMAIL_CONFLICT"
 	ErrCodeEmailNotVerified     = "EMAIL_NOT_VERIFIED"
 	ErrCodeRegistrationMoved    = "REGISTRATION_MOVED"
+	ErrCodeLoginMoved           = "LOGIN_MOVED"
 	ErrCodeZitadelNotConfigured = "ZITADEL_NOT_CONFIGURED"
 	ErrCodeUpstreamUnavailable  = "UPSTREAM_UNAVAILABLE"
 )

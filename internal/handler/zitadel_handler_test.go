@@ -283,11 +283,8 @@ func (f *fakeZitadel) setWrongKey(wrong bool)       { f.wrongKey = wrong }
 
 func zitadelConfigFor(f *fakeZitadel) *config.Config {
 	return &config.Config{
-		GitHubClientID:      "test-client-id",
-		GitHubClientSecret:  "test-client-secret",
 		JWTSecret:           "test-jwt-secret",
 		FrontendURL:         "http://localhost:5173",
-		GitHubRedirectURL:   "http://localhost:8080/auth/github/callback",
 		ZitadelIssuer:       f.srv.URL,
 		ZitadelClientID:     "todo-zitadel-client",
 		ZitadelClientSecret: "todo-secret",
@@ -942,8 +939,11 @@ func TestZitadelProviders(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Data["github"] != true || body.Data["zitadel"] != true {
+	if body.Data["zitadel"] != true {
 		t.Errorf("providers = %v", body.Data)
+	}
+	if _, ok := body.Data["github"]; ok {
+		t.Errorf("github provider must be gone, providers = %v", body.Data)
 	}
 	wantRegister := f.srv.URL + "/ui/v2/login/register"
 	if got := body.Data["zitadel_register_url"]; got != wantRegister {
@@ -961,8 +961,11 @@ func TestZitadelProviders(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Data["github"] != true || body.Data["zitadel"] != false {
+	if body.Data["zitadel"] != false {
 		t.Errorf("providers = %v", body.Data)
+	}
+	if _, ok := body.Data["github"]; ok {
+		t.Errorf("github provider must be gone, providers = %v", body.Data)
 	}
 	if _, ok := body.Data["zitadel_register_url"]; ok {
 		t.Errorf("disabled ZITADEL must not advertise a register URL: %v", body.Data)

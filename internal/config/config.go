@@ -10,14 +10,11 @@ import (
 
 // Config holds all configuration for the application.
 type Config struct {
-	Port               string
-	DatabaseURL        string
-	GitHubClientID     string
-	GitHubClientSecret string
-	JWTSecret          string
-	FrontendURL        string
-	GitHubRedirectURL  string
-	LogLevel           string
+	Port        string
+	DatabaseURL string
+	JWTSecret   string
+	FrontendURL string
+	LogLevel    string
 
 	// ZITADEL is the OIDC provider for the hosted login. It is optional: when
 	// ZITADEL_CLIENT_ID is empty the login page hides the ZITADEL button and
@@ -66,14 +63,11 @@ func (c *Config) VerifyURL() string {
 // Load reads configuration from environment variables.
 func Load() (*Config, error) {
 	cfg := &Config{
-		Port:               getEnv("PORT", "8080"),
-		DatabaseURL:        os.Getenv("DATABASE_URL"),
-		GitHubClientID:     os.Getenv("GITHUB_CLIENT_ID"),
-		GitHubClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
-		JWTSecret:          os.Getenv("JWT_SECRET"),
-		FrontendURL:        getEnv("FRONTEND_URL", "http://localhost:5173"),
-		GitHubRedirectURL:  getEnv("GITHUB_REDIRECT_URL", "http://localhost:8080/auth/github/callback"),
-		LogLevel:           getEnv("LOG_LEVEL", "debug"),
+		Port:        getEnv("PORT", "8080"),
+		DatabaseURL: os.Getenv("DATABASE_URL"),
+		JWTSecret:   os.Getenv("JWT_SECRET"),
+		FrontendURL: getEnv("FRONTEND_URL", "http://localhost:5173"),
+		LogLevel:    getEnv("LOG_LEVEL", "debug"),
 
 		ZitadelIssuer:        getEnv("ZITADEL_ISSUER", "https://auth.qpmstudio.dpdns.org"),
 		ZitadelClientID:      os.Getenv("ZITADEL_CLIENT_ID"),
@@ -106,16 +100,7 @@ func getEnv(key, fallback string) string {
 // break a public deployment. It never fails the process: those defaults are
 // intentional for local development.
 func (c *Config) WarnDeploymentConfig(logger *slog.Logger) {
-	if c.GitHubClientID == "" || c.GitHubClientSecret == "" {
-		logger.Warn("GitHub OAuth app not configured; /auth/github/login will return 503",
-			"hint", "set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET",
-			"client_id_set", c.GitHubClientID != "",
-			"client_secret_set", c.GitHubClientSecret != "",
-		)
-	}
-
 	warnLocalhostURL(logger, "FRONTEND_URL", c.FrontendURL)
-	warnLocalhostURL(logger, "GITHUB_REDIRECT_URL", c.GitHubRedirectURL)
 
 	if c.ZitadelClientID == "" {
 		logger.Info("ZITADEL login not configured; /auth/zitadel/login will return 503",

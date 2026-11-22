@@ -11,13 +11,9 @@ import (
 func TestLoad(t *testing.T) {
 	// Set required env vars
 	os.Setenv("DATABASE_URL", "postgres://localhost:5432/tododemo")
-	os.Setenv("GITHUB_CLIENT_ID", "test-client-id")
-	os.Setenv("GITHUB_CLIENT_SECRET", "test-client-secret")
 	os.Setenv("JWT_SECRET", "test-jwt-secret")
 	defer func() {
 		os.Unsetenv("DATABASE_URL")
-		os.Unsetenv("GITHUB_CLIENT_ID")
-		os.Unsetenv("GITHUB_CLIENT_SECRET")
 		os.Unsetenv("JWT_SECRET")
 		os.Unsetenv("PORT")
 		os.Unsetenv("FRONTEND_URL")
@@ -43,14 +39,10 @@ func TestLoad(t *testing.T) {
 
 func TestLoadCustomPort(t *testing.T) {
 	os.Setenv("DATABASE_URL", "postgres://localhost:5432/tododemo")
-	os.Setenv("GITHUB_CLIENT_ID", "test-client-id")
-	os.Setenv("GITHUB_CLIENT_SECRET", "test-client-secret")
 	os.Setenv("JWT_SECRET", "test-jwt-secret")
 	os.Setenv("PORT", "3000")
 	defer func() {
 		os.Unsetenv("DATABASE_URL")
-		os.Unsetenv("GITHUB_CLIENT_ID")
-		os.Unsetenv("GITHUB_CLIENT_SECRET")
 		os.Unsetenv("JWT_SECRET")
 		os.Unsetenv("PORT")
 	}()
@@ -94,14 +86,8 @@ func TestLoadCustomLogLevel(t *testing.T) {
 }
 
 func TestLoadMissingDatabaseURL(t *testing.T) {
-	os.Setenv("GITHUB_CLIENT_ID", "test")
-	os.Setenv("GITHUB_CLIENT_SECRET", "test")
 	os.Setenv("JWT_SECRET", "test")
-	defer func() {
-		os.Unsetenv("GITHUB_CLIENT_ID")
-		os.Unsetenv("GITHUB_CLIENT_SECRET")
-		os.Unsetenv("JWT_SECRET")
-	}()
+	defer os.Unsetenv("JWT_SECRET")
 
 	_, err := Load()
 	if err == nil {
@@ -111,13 +97,7 @@ func TestLoadMissingDatabaseURL(t *testing.T) {
 
 func TestLoadMissingJWTSecret(t *testing.T) {
 	os.Setenv("DATABASE_URL", "postgres://localhost/tododemo")
-	os.Setenv("GITHUB_CLIENT_ID", "test")
-	os.Setenv("GITHUB_CLIENT_SECRET", "test")
-	defer func() {
-		os.Unsetenv("DATABASE_URL")
-		os.Unsetenv("GITHUB_CLIENT_ID")
-		os.Unsetenv("GITHUB_CLIENT_SECRET")
-	}()
+	defer os.Unsetenv("DATABASE_URL")
 
 	_, err := Load()
 	if err == nil {
@@ -128,10 +108,10 @@ func TestLoadMissingJWTSecret(t *testing.T) {
 func TestWarnDeploymentConfig(t *testing.T) {
 	publicURL := "https://todo.qpmstudio.dpdns.org"
 	configured := Config{
-		GitHubClientID:     "client-id",
-		GitHubClientSecret: "client-secret",
+		ZitadelClientID:    "client-id",
+		ZitadelClientSecret: "client-secret",
 		FrontendURL:        publicURL,
-		GitHubRedirectURL:  publicURL + "/auth/github/callback",
+		ZitadelRedirectURL: publicURL + "/auth/zitadel/callback",
 	}
 
 	tests := []struct {
@@ -141,45 +121,46 @@ func TestWarnDeploymentConfig(t *testing.T) {
 		wantSilent bool
 	}{
 		{
-			name:       "public config with oauth set is silent",
+			name:       "public config is silent",
 			cfg:        configured,
 			wantSilent: true,
 		},
 		{
-			name: "missing oauth credentials warn",
+			name: "missing redirect url warns",
 			cfg: Config{
-				FrontendURL:       publicURL,
-				GitHubRedirectURL: publicURL + "/auth/github/callback",
-			},
-			wantLogs: []string{"OAuth app not configured", "503"},
-		},
-		{
-			name: "localhost urls warn",
-			cfg: Config{
-				GitHubClientID:     "client-id",
-				GitHubClientSecret: "client-secret",
-				FrontendURL:        "http://localhost:5173",
-				GitHubRedirectURL:  "http://127.0.0.1:8080/auth/github/callback",
-			},
-			wantLogs: []string{"localhost", "FRONTEND_URL", "GITHUB_REDIRECT_URL"},
-		},
-		{
-			name: "ipv6 loopback warns",
-			cfg: Config{
-				GitHubClientID:     "client-id",
-				GitHubClientSecret: "client-secret",
+				ZitadelClientID:    "client-id",
+				ZitadelClientSecret: "client-secret",
 				FrontendURL:        publicURL,
-				GitHubRedirectURL:  "http://[::1]:8080/auth/github/callback",
 			},
-			wantLogs: []string{"localhost", "GITHUB_REDIRECT_URL"},
+			wantLogs: []string{"ZITADEL_REDIRECT_URL is empty"},
+		},
+		{
+			name: "localhost frontend warns",
+			cfg: Config{
+				ZitadelClientID:    "client-id",
+				ZitadelClientSecret: "client-secret",
+				FrontendURL:        "http://localhost:5173",
+				ZitadelRedirectURL: publicURL + "/auth/zitadel/callback",
+			},
+			wantLogs: []string{"localhost", "FRONTEND_URL"},
+		},
+		{
+			name: "ipv6 loopback redirect warns",
+			cfg: Config{
+				ZitadelClientID:    "client-id",
+				ZitadelClientSecret: "client-secret",
+				FrontendURL:        publicURL,
+				ZitadelRedirectURL: "http://[::1]:8080/auth/zitadel/callback",
+			},
+			wantLogs: []string{"localhost", "ZITADEL_REDIRECT_URL"},
 		},
 		{
 			name: "invalid url warns",
 			cfg: Config{
-				GitHubClientID:     "client-id",
-				GitHubClientSecret: "client-secret",
+				ZitadelClientID:    "client-id",
+				ZitadelClientSecret: "client-secret",
 				FrontendURL:        "://not-a-url",
-				GitHubRedirectURL:  publicURL + "/auth/github/callback",
+				ZitadelRedirectURL: publicURL + "/auth/zitadel/callback",
 			},
 			wantLogs: []string{"not a valid URL", "FRONTEND_URL"},
 		},
