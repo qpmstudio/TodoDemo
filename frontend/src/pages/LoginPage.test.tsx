@@ -7,6 +7,7 @@ import { AuthContext } from '../context/AuthContext';
 
 // Mock the API client
 vi.mock('../api/client', () => ({
+  fetchAuthProviders: vi.fn().mockResolvedValue({ github: true, zitadel: false }),
   login: vi.fn(),
   register: vi.fn(),
   fetchMe: vi.fn(),
@@ -17,9 +18,9 @@ vi.mock('../api/client', () => ({
   deleteTodo: vi.fn(),
 }));
 
-import { login, register } from '../api/client';
+import { fetchAuthProviders, login, register } from '../api/client';
 
-function renderWithAuth(user: any = null, loading = false) {
+function renderWithAuth(user: any = null, loading = false, initialEntry = '/') {
   const mockAuth = {
     user,
     loading,
@@ -28,7 +29,7 @@ function renderWithAuth(user: any = null, loading = false) {
     checkAuth: vi.fn(),
   };
   return render(
-    <MemoryRouter initialEntries={['/']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <AuthContext.Provider value={mockAuth}>
         <LoginPage />
       </AuthContext.Provider>
@@ -54,6 +55,27 @@ describe('LoginPage', () => {
     const githubLink = screen.getByText('Login with GitHub');
     expect(githubLink).toBeInTheDocument();
     expect(githubLink).toHaveAttribute('href', '/auth/github/login');
+  });
+
+  it('shows ZITADEL login button when the provider is enabled', async () => {
+    vi.mocked(fetchAuthProviders).mockResolvedValueOnce({ github: true, zitadel: true });
+    renderWithAuth(null, false);
+
+    const zitadelLink = await screen.findByText('Login with ZITADEL');
+    expect(zitadelLink).toHaveAttribute('href', '/auth/zitadel/login');
+  });
+
+  it('hides ZITADEL login button when the provider is disabled', async () => {
+    renderWithAuth(null, false);
+
+    await waitFor(() => expect(fetchAuthProviders).toHaveBeenCalled());
+    expect(screen.queryByText('Login with ZITADEL')).not.toBeInTheDocument();
+  });
+
+  it('shows an error banner after a cancelled ZITADEL login', () => {
+    renderWithAuth(null, false, '/?error=zitadel');
+
+    expect(screen.getByRole('alert')).toHaveTextContent('ZITADEL sign-in did not complete');
   });
 
   it('shows login tab active by default', () => {

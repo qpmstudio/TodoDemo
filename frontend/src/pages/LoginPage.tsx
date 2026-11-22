@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from 'react';
-import { Navigate } from 'react-router-dom';
+import { useEffect, useState, type FormEvent } from 'react';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { login, register } from '../api/client';
+import { fetchAuthProviders, login, register, type AuthProviders } from '../api/client';
 
 interface FormProps {
   email: string;
@@ -139,6 +139,23 @@ export function LoginPage() {
   const { user, loading, checkAuth } = useAuth();
   const [tab, setTab] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
+  const [providers, setProviders] = useState<AuthProviders | null>(null);
+  const [searchParams] = useSearchParams();
+  const oauthError = searchParams.get('error');
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAuthProviders()
+      .then((result) => {
+        if (!cancelled) setProviders(result);
+      })
+      .catch(() => {
+        if (!cancelled) setProviders({ github: false, zitadel: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   if (loading) {
     return (
@@ -164,6 +181,12 @@ export function LoginPage() {
           A simple todo app to keep you organized.
         </p>
 
+        {oauthError === 'zitadel' && (
+          <div className="auth-form__error" role="alert">
+            ZITADEL sign-in did not complete. Please try again.
+          </div>
+        )}
+
         <div className="auth-tabs">
           <button
             className={`auth-tabs__tab${tab === 'login' ? ' auth-tabs__tab--active' : ''}`}
@@ -187,13 +210,23 @@ export function LoginPage() {
           <RegisterForm email={email} onEmailChange={setEmail} onSuccess={handleSuccess} />
         )}
 
-        <div className="auth-separator">
-          <span>or</span>
-        </div>
+        {(providers?.github !== false || providers?.zitadel) && (
+          <div className="auth-separator">
+            <span>or</span>
+          </div>
+        )}
 
-        <a href="/auth/github/login" className="login-card__button login-card__button--github">
-          Login with GitHub
-        </a>
+        {providers?.github !== false && (
+          <a href="/auth/github/login" className="login-card__button login-card__button--github">
+            Login with GitHub
+          </a>
+        )}
+
+        {providers?.zitadel && (
+          <a href="/auth/zitadel/login" className="login-card__button login-card__button--zitadel">
+            Login with ZITADEL
+          </a>
+        )}
       </div>
     </div>
   );
