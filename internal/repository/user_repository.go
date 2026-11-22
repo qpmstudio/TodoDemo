@@ -59,38 +59,87 @@ func UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string)
 	return user, nil
 }
 
-// ClaimUnlinkedUserByEmail attaches a ZITADEL subject to a local account that
-// was created before ZITADEL became the only way in. The caller only reaches
-// this path after ZITADEL proved the user owns the email, so the verified claim
-// is a safe ownership proof; the local row is adopted instead of duplicated,
-// which keeps the user's todos. It returns (nil, nil) when no unlinked row has
-// that email, so the caller can report a real conflict.
-func ClaimUnlinkedUserByEmail(ctx context.Context, sub, email string) (*model.User, error) {
-	if email == "" {
-		return nil, nil
-	}
-	now := time.Now()
+// GetUserByZitadelSub returns the local user already linked to a ZITADEL
+// subject, or (nil, nil) when the subject has never signed in before.
+func GetUserByZitadelSub(ctx context.Context, sub string) (*model.User, error) {
 	user := &model.User{}
 	err := database.Pool.QueryRow(ctx,
-		`UPDATE users
-		    SET zitadel_sub = $1, auth_provider = 'zitadel', updated_at = $2
-		  WHERE id = (
-		        SELECT id FROM users
-		         WHERE lower(email) = lower($3) AND zitadel_sub IS NULL
-		         ORDER BY (password_hash IS NULL), created_at
-		         LIMIT 1)
-		  RETURNING id, zitadel_sub, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(auth_provider, ''), created_at, updated_at`,
-		sub,
-		now,
-		email,
-	).Scan(&user.ID, &user.ZitadelSub, &user.Email, &user.DisplayName, &user.AuthProvider, &user.CreatedAt, &user.UpdatedAt)
+		`SELECT id, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(auth_provider, '')
+		   FROM users WHERE zitadel_sub = $1`, sub,
+	).Scan(&user.ID, &user.Email, &user.DisplayName, &user.AuthProvider)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	user.ZitadelSub = &sub
 	return user, nil
+}
+
+// ClaimUnlinkedUserByEmail attaches a ZITADEL subject to a local account that
+// was created before ZITADEL became the only way in. The caller reaches this
+// path only after ZITADEL proved the user owns the email, so the verified claim
+// is a safe ownership proof; adopting the row instead of inserting a duplicate
+// keeps the user's todos reachable.
+//
+// The insert path cannot rely on a unique-email violation to detect this case:
+// idx_users_email only covers rows with a password hash, and ZITADEL rows have
+// none, so two rows with the same email coexist silently. The lookup therefore
+// happens up front. Only an unambiguous single unlinked row is adopted, and the
+// count is returned so the caller can report ambiguity instead of guessing.
+func ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName string) (*model.User, int, error) {
+	if email == "" {
+		return nil, 0, nil
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx,
+		`SELECT id FROM users
+		  WHERE lower(email) = lower($1) AND zitadel_sub IS NULL
+		  FOR UPDATE`, email)
+	if err != nil {
+		return nil, 0, err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, len(ids), err
+	}
+	if len(ids) != 1 {
+		return nil, len(ids), nil
+	}
+
+	user := &model.User{}
+	err = tx.QueryRow(ctx,
+		`UPDATE users
+		    SET zitadel_sub = $1,
+		        auth_provider = 'zitadel',
+		        display_name = COALESCE(NULLIF($2, ''), display_name),
+		        updated_at = $3
+		  WHERE id = $4
+		  RETURNING id, zitadel_sub, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(auth_provider, ''), created_at, updated_at`,
+		sub, displayName, time.Now(), ids[0],
+	).Scan(&user.ID, &user.ZitadelSub, &user.Email, &user.DisplayName, &user.AuthProvider, &user.CreatedAt, &user.UpdatedAt)
+	if err != nil {
+		return nil, 1, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, 1, err
+	}
+	return user, 1, nil
 }
 
 // GetUserByID retrieves a user by their UUID.

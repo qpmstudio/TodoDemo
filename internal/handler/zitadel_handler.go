@@ -32,8 +32,9 @@ const (
 // zitadelUserStore is the user persistence the handler depends on. Tests inject
 // a fake; production uses repositoryUserStore.
 type zitadelUserStore interface {
+	GetUserByZitadelSub(ctx context.Context, sub string) (*model.User, error)
 	UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string) (*model.User, error)
-	ClaimUnlinkedUserByEmail(ctx context.Context, sub, email string) (*model.User, error)
+	ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName string) (*model.User, int, error)
 }
 
 type repositoryUserStore struct{}
@@ -42,8 +43,12 @@ func (repositoryUserStore) UpsertUserByZitadelSub(ctx context.Context, sub, emai
 	return repository.UpsertUserByZitadelSub(ctx, sub, email, displayName)
 }
 
-func (repositoryUserStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email string) (*model.User, error) {
-	return repository.ClaimUnlinkedUserByEmail(ctx, sub, email)
+func (repositoryUserStore) GetUserByZitadelSub(ctx context.Context, sub string) (*model.User, error) {
+	return repository.GetUserByZitadelSub(ctx, sub)
+}
+
+func (repositoryUserStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName string) (*model.User, int, error) {
+	return repository.ClaimUnlinkedUserByEmail(ctx, sub, email, displayName)
 }
 
 // oidcClient is the protocol surface used by the handler.
@@ -262,29 +267,20 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.store.UpsertUserByZitadelSub(r.Context(), claims.Subject, email, zitadelDisplayName(name, username, email))
+	displayName := zitadelDisplayName(name, username, email)
+	user, err := h.store.GetUserByZitadelSub(r.Context(), claims.Subject)
 	if err != nil {
-		if errors.Is(err, repository.ErrEmailConflict) {
-			// Local accounts created before ZITADEL owned registration keep
-			// their email. Now that ZITADEL verified that same address, adopt
-			// the row (and its todos) instead of rejecting the login; only
-			// an email that already belongs to another ZITADEL subject is a
-			// real conflict.
-			claimed, claimErr := h.store.ClaimUnlinkedUserByEmail(r.Context(), claims.Subject, email)
-			if claimErr != nil {
-				writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError,
-					"Failed to link user account", claimErr)
+		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to load user", err)
+		return
+	}
+	if user == nil {
+		user, err = h.adoptOrCreateUser(r, claims.Subject, email, displayName)
+		if err != nil {
+			var conflict *accountConflictError
+			if errors.As(err, &conflict) {
+				writeError(w, r, http.StatusConflict, model.ErrCodeAccountEmailConflict, conflict.message, err)
 				return
 			}
-			if claimed == nil {
-				writeError(w, r, http.StatusConflict, model.ErrCodeAccountEmailConflict,
-					"This email already belongs to another account; sign in with that method instead", err)
-				return
-			}
-			logging.FromContext(r.Context()).InfoContext(r.Context(),
-				"zitadel login adopted an unlinked local account", "user_id", claimed.ID)
-			user = claimed
-		} else {
 			writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to save user", err)
 			return
 		}
@@ -302,6 +298,42 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, h.cfg.FrontendURL+state.ReturnTo, http.StatusFound)
+}
+
+// accountConflictError marks a login that must be refused because the verified
+// email maps to more than one legacy local account.
+type accountConflictError struct{ message string }
+
+func (e *accountConflictError) Error() string { return e.message }
+
+// adoptOrCreateUser keeps pre-ZITADEL accounts reachable. The local row is only
+// adopted when exactly one unlinked row carries the verified email; an
+// ambiguous email is refused instead of silently creating yet another row, and
+// only a proven absence of a legacy row falls through to a fresh insert.
+func (h *ZitadelHandler) adoptOrCreateUser(r *http.Request, sub, email, displayName string) (*model.User, error) {
+	ctx := r.Context()
+	claimed, matches, err := h.store.ClaimUnlinkedUserByEmail(ctx, sub, email, displayName)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case matches > 1:
+		logging.FromContext(ctx).WarnContext(ctx,
+			"zitadel login found ambiguous unlinked local accounts; refusing to adopt", "matches", matches)
+		return nil, &accountConflictError{message: "Several local accounts use this email; an administrator must merge them before this sign-in can continue"}
+	case claimed != nil:
+		logging.FromContext(ctx).InfoContext(ctx,
+			"zitadel login adopted an unlinked local account", "user_id", claimed.ID)
+		return claimed, nil
+	}
+	user, err := h.store.UpsertUserByZitadelSub(ctx, sub, email, displayName)
+	if err != nil {
+		if errors.Is(err, repository.ErrEmailConflict) {
+			return nil, &accountConflictError{message: "This email already belongs to another account; sign in with that method instead"}
+		}
+		return nil, err
+	}
+	return user, nil
 }
 
 // Logout clears the local session. Single sign-out is opt-in with ?sso=1 and
