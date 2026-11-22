@@ -24,13 +24,17 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // request metadata and, for 5xx, a stack trace) goes to the server log so
 // issues can be diagnosed from logs alone.
 func writeError(w http.ResponseWriter, r *http.Request, status int, code, message string, cause error) {
-	logErrorResponse(r, status, code, message, cause)
+	writeAPIError(w, r, status, &model.APIError{Code: code, Message: message}, cause)
+}
+
+// writeAPIError writes an error payload that carries extra fields, such as the
+// self-service verify link on EMAIL_NOT_VERIFIED.
+func writeAPIError(w http.ResponseWriter, r *http.Request, status int, apiErr *model.APIError, cause error) {
+	logErrorResponse(r, status, apiErr.Code, apiErr.Message, cause)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(model.APIResponse{
-		Error: &model.APIError{Code: code, Message: message},
-	})
+	json.NewEncoder(w).Encode(model.APIResponse{Error: apiErr})
 }
 
 // logErrorResponse logs the context of an error response.

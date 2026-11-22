@@ -1,15 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { LoginPage } from './LoginPage';
 import { AuthContext } from '../context/AuthContext';
 
 // Mock the API client
 vi.mock('../api/client', () => ({
-  fetchAuthProviders: vi.fn().mockResolvedValue({ github: true, zitadel: false }),
-  login: vi.fn(),
-  register: vi.fn(),
+  fetchAuthProviders: vi.fn().mockResolvedValue({ zitadel: false }),
   fetchMe: vi.fn(),
   logout: vi.fn(),
   fetchTodos: vi.fn(),
@@ -18,7 +15,7 @@ vi.mock('../api/client', () => ({
   deleteTodo: vi.fn(),
 }));
 
-import { fetchAuthProviders, login, register } from '../api/client';
+import { fetchAuthProviders } from '../api/client';
 
 function renderWithAuth(user: any = null, loading = false, initialEntry = '/') {
   const mockAuth = {
@@ -42,34 +39,48 @@ describe('LoginPage', () => {
     vi.clearAllMocks();
   });
 
-  it('renders both tabs', () => {
+  it('does not render any self-built sign-in form', () => {
     renderWithAuth(null, false);
 
-    expect(screen.getByRole('button', { name: 'Login' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Register' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Email')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Sign In' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Register' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Login with GitHub')).not.toBeInTheDocument();
   });
 
-  it('shows GitHub login button', () => {
-    renderWithAuth(null, false);
-
-    const githubLink = screen.getByText('Login with GitHub');
-    expect(githubLink).toBeInTheDocument();
-    expect(githubLink).toHaveAttribute('href', '/auth/github/login');
-  });
-
-  it('shows ZITADEL login button when the provider is enabled', async () => {
-    vi.mocked(fetchAuthProviders).mockResolvedValueOnce({ github: true, zitadel: true });
+  it('shows the ZITADEL login button when the provider is enabled', async () => {
+    vi.mocked(fetchAuthProviders).mockResolvedValueOnce({ zitadel: true });
     renderWithAuth(null, false);
 
     const zitadelLink = await screen.findByText('Login with ZITADEL');
     expect(zitadelLink).toHaveAttribute('href', '/auth/zitadel/login');
   });
 
-  it('hides ZITADEL login button when the provider is disabled', async () => {
+  it('hides the ZITADEL login button when the provider is disabled', async () => {
     renderWithAuth(null, false);
 
     await waitFor(() => expect(fetchAuthProviders).toHaveBeenCalled());
     expect(screen.queryByText('Login with ZITADEL')).not.toBeInTheDocument();
+    expect(screen.getByText('Sign-in is temporarily unavailable.')).toBeInTheDocument();
+  });
+
+  it('links account creation to the ZITADEL register page', async () => {
+    vi.mocked(fetchAuthProviders).mockResolvedValueOnce({
+      zitadel: true,
+      zitadel_register_url: 'https://auth.example.com/ui/v2/login/register',
+    });
+    renderWithAuth(null, false);
+
+    const link = await screen.findByText('Create an account');
+    expect(link).toHaveAttribute('href', 'https://auth.example.com/ui/v2/login/register');
+  });
+
+  it('hides the account creation link when ZITADEL is not configured', async () => {
+    renderWithAuth(null, false);
+
+    await waitFor(() => expect(fetchAuthProviders).toHaveBeenCalled());
+    expect(screen.queryByText('Create an account')).not.toBeInTheDocument();
   });
 
   it('shows an error banner after a cancelled ZITADEL login', () => {
@@ -78,30 +89,33 @@ describe('LoginPage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('ZITADEL sign-in did not complete');
   });
 
-  it('shows login tab active by default', () => {
-    renderWithAuth(null, false);
+  it('shows an error banner when the email is not verified', () => {
+    renderWithAuth(null, false, '/?error=email_not_verified');
 
-    const loginTab = screen.getByRole('button', { name: 'Login' });
-    expect(loginTab.className).toContain('auth-tabs__tab--active');
+    expect(screen.getByRole('alert')).toHaveTextContent('Your email is not verified yet');
   });
 
-  it('switches to register tab and preserves email', async () => {
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
+  it('tells the user a new verification email was sent', () => {
+    renderWithAuth(null, false, '/?error=email_not_verified&resent=1');
 
-    // Type email in login form
-    const emailInput = screen.getByLabelText('Email');
-    await user.type(emailInput, 'test@example.com');
+    expect(screen.getByRole('alert')).toHaveTextContent('We sent a new verification email');
+  });
 
-    // Switch to register tab
-    const registerTab = screen.getByRole('button', { name: 'Register' });
-    await user.click(registerTab);
+  it('tells the user when the resend failed', () => {
+    renderWithAuth(null, false, '/?error=email_not_verified&resent=0');
 
-    // Email should be preserved
-    await waitFor(() => {
-      const emailInputs = screen.getAllByDisplayValue('test@example.com');
-      expect(emailInputs.length).toBeGreaterThan(0);
+    expect(screen.getByRole('alert')).toHaveTextContent('we could not send a new verification email');
+  });
+
+  it('links the unverified-email banner to the ZITADEL verify page', async () => {
+    vi.mocked(fetchAuthProviders).mockResolvedValueOnce({
+      zitadel: true,
+      zitadel_verify_url: 'https://auth.example.com/ui/v2/login',
     });
+    renderWithAuth(null, false, '/?error=email_not_verified');
+
+    const link = await screen.findByText('Verify your email in ZITADEL');
+    expect(link).toHaveAttribute('href', 'https://auth.example.com/ui/v2/login');
   });
 
   it('shows loading spinner when loading', () => {
@@ -124,164 +138,5 @@ describe('LoginPage', () => {
 
     // Should redirect, so login card should not be visible
     expect(screen.queryByText('TodoDemo')).not.toBeInTheDocument();
-  });
-
-  it('shows login form fields', () => {
-    renderWithAuth(null, false);
-
-    // Use getAllByRole since tab and submit button both reference these names
-    expect(screen.getByLabelText('Email')).toBeInTheDocument();
-    expect(screen.getByLabelText('Password')).toBeInTheDocument();
-    const buttons = screen.getAllByRole('button', { name: 'Sign In' });
-    expect(buttons.length).toBeGreaterThan(0);
-  });
-
-  it('shows register form with confirm password when tab is clicked', async () => {
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    const registerTab = screen.getByRole('button', { name: 'Register' });
-    await user.click(registerTab);
-
-    expect(screen.getByLabelText('Confirm Password')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Create Account' })).toBeInTheDocument();
-  });
-});
-
-describe('LoginForm', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('calls login API on submit', async () => {
-    const mockUser = { id: '1', github_login: '', github_avatar_url: '', display_name: 'test', created_at: '', updated_at: '' };
-    vi.mocked(login).mockResolvedValueOnce(mockUser);
-
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    await user.type(screen.getByLabelText('Email'), 'test@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.click(screen.getByRole('button', { name: 'Sign In' }));
-
-    await waitFor(() => {
-      expect(login).toHaveBeenCalledWith('test@example.com', 'password123');
-    });
-  });
-
-  it('shows error message on login failure', async () => {
-    vi.mocked(login).mockRejectedValueOnce(new Error('Invalid email or password'));
-
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    await user.type(screen.getByLabelText('Email'), 'test@example.com');
-    await user.type(screen.getByLabelText('Password'), 'wrong');
-    await user.click(screen.getByRole('button', { name: 'Sign In' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Invalid email or password')).toBeInTheDocument();
-    });
-  });
-
-  it('disables button while submitting', async () => {
-    vi.mocked(login).mockImplementationOnce(() => new Promise(() => {})); // never resolves
-
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    await user.type(screen.getByLabelText('Email'), 'test@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.click(screen.getByRole('button', { name: 'Sign In' }));
-
-    await waitFor(() => {
-      const button = screen.getByRole('button', { name: 'Signing in...' });
-      expect(button).toBeDisabled();
-    });
-  });
-});
-
-describe('RegisterForm', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('calls register API on submit', async () => {
-    const mockUser = { id: '1', github_login: '', github_avatar_url: '', display_name: 'test', created_at: '', updated_at: '' };
-    vi.mocked(register).mockResolvedValueOnce(mockUser);
-
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    // Switch to register tab
-    await user.click(screen.getByRole('button', { name: 'Register' }));
-
-    await user.type(screen.getByLabelText('Email'), 'test@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.type(screen.getByLabelText('Confirm Password'), 'password123');
-    await user.click(screen.getByRole('button', { name: 'Create Account' }));
-
-    await waitFor(() => {
-      expect(register).toHaveBeenCalledWith('test@example.com', 'password123');
-    });
-  });
-
-  it('shows error when passwords do not match', async () => {
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    // Switch to register tab
-    await user.click(screen.getByRole('button', { name: 'Register' }));
-
-    await user.type(screen.getByLabelText('Email'), 'test@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.type(screen.getByLabelText('Confirm Password'), 'different');
-    await user.click(screen.getByRole('button', { name: 'Create Account' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Passwords do not match')).toBeInTheDocument();
-    });
-
-    // register should not have been called
-    expect(register).not.toHaveBeenCalled();
-  });
-
-  it('shows error message on registration failure', async () => {
-    vi.mocked(register).mockRejectedValueOnce(new Error('Email already registered'));
-
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    // Switch to register tab
-    await user.click(screen.getByRole('button', { name: 'Register' }));
-
-    await user.type(screen.getByLabelText('Email'), 'test@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.type(screen.getByLabelText('Confirm Password'), 'password123');
-    await user.click(screen.getByRole('button', { name: 'Create Account' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Email already registered')).toBeInTheDocument();
-    });
-  });
-
-  it('disables button while submitting', async () => {
-    vi.mocked(register).mockImplementationOnce(() => new Promise(() => {})); // never resolves
-
-    const user = userEvent.setup();
-    renderWithAuth(null, false);
-
-    // Switch to register tab
-    await user.click(screen.getByRole('button', { name: 'Register' }));
-
-    await user.type(screen.getByLabelText('Email'), 'test@example.com');
-    await user.type(screen.getByLabelText('Password'), 'password123');
-    await user.type(screen.getByLabelText('Confirm Password'), 'password123');
-    await user.click(screen.getByRole('button', { name: 'Create Account' }));
-
-    await waitFor(() => {
-      const button = screen.getByRole('button', { name: 'Creating account...' });
-      expect(button).toBeDisabled();
-    });
   });
 });

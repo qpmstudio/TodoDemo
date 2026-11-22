@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -29,6 +30,12 @@ type fakeZitadelStore struct {
 	users map[string]*model.User
 	calls int
 	err   error
+
+	claimUser  *model.User
+	claimErr   error
+	claimCalls int
+	claimSub   string
+	claimEmail string
 }
 
 func newFakeZitadelStore() *fakeZitadelStore {
@@ -61,6 +68,18 @@ func (f *fakeZitadelStore) UpsertUserByZitadelSub(ctx context.Context, sub, emai
 	return user, nil
 }
 
+func (f *fakeZitadelStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email string) (*model.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claimCalls++
+	f.claimSub = sub
+	f.claimEmail = email
+	if f.claimErr != nil {
+		return nil, f.claimErr
+	}
+	return f.claimUser, nil
+}
+
 func (f *fakeZitadelStore) savedUsers() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -81,19 +100,22 @@ type fakeZitadel struct {
 	badKey *rsa.PrivateKey
 	kid    string
 
-	mu             sync.Mutex
-	nonce          string
-	expiresIn      time.Duration
-	email          string
-	name           string
-	emailVerified  bool
-	omitProfile    bool
-	tokenStatus    int
-	wrongKey       bool
-	tokenCalls     int
-	userInfoEmail  string
-	userInfoName   string
-	userInfoCalled int
+	mu               sync.Mutex
+	nonce            string
+	expiresIn        time.Duration
+	email            string
+	name             string
+	emailVerified    bool
+	omitProfile      bool
+	tokenStatus      int
+	wrongKey         bool
+	tokenCalls       int
+	userInfoEmail    string
+	userInfoName     string
+	userInfoVerified bool
+	userInfoCalled   int
+	resendStatus     int
+	resendCalled     int
 }
 
 func newFakeZitadel(t *testing.T) *fakeZitadel {
@@ -107,19 +129,21 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 		t.Fatalf("generate alternate key: %v", err)
 	}
 	f := &fakeZitadel{
-		key:           key,
-		badKey:        badKey,
-		kid:           "test-kid",
-		expiresIn:     5 * time.Minute,
-		email:         "zitadel@example.com",
-		name:          "ZITADEL User",
-		emailVerified: true,
+		key:              key,
+		badKey:           badKey,
+		kid:              "test-kid",
+		expiresIn:        5 * time.Minute,
+		email:            "zitadel@example.com",
+		name:             "ZITADEL User",
+		emailVerified:    true,
+		userInfoVerified: true,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth/v2/keys", f.handleJWKS)
 	mux.HandleFunc("/oauth/v2/token", f.handleToken)
 	mux.HandleFunc("/oidc/v1/userinfo", f.handleUserInfo)
+	mux.HandleFunc("/auth/v1/users/me/email/_resend_verification", f.handleResendVerification)
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -215,9 +239,35 @@ func (f *fakeZitadel) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"sub":            "zitadel-sub-1",
 		"email":          f.userInfoEmail,
-		"email_verified": true,
+		"email_verified": f.userInfoVerified,
 		"name":           f.userInfoName,
 	})
+}
+
+func (f *fakeZitadel) handleResendVerification(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resendCalled++
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Authorization") != "Bearer access-token" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if f.resendStatus != 0 && f.resendStatus != http.StatusOK {
+		w.WriteHeader(f.resendStatus)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{}`))
+}
+
+func (f *fakeZitadel) resendCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.resendCalled
 }
 
 func (f *fakeZitadel) setNonce(nonce string) {
@@ -226,17 +276,15 @@ func (f *fakeZitadel) setNonce(nonce string) {
 	f.nonce = nonce
 }
 
+func (f *fakeZitadel) setResendStatus(status int)   { f.resendStatus = status }
 func (f *fakeZitadel) setTokenStatus(status int)    { f.tokenStatus = status }
 func (f *fakeZitadel) setExpiresIn(d time.Duration) { f.expiresIn = d }
 func (f *fakeZitadel) setWrongKey(wrong bool)       { f.wrongKey = wrong }
 
 func zitadelConfigFor(f *fakeZitadel) *config.Config {
 	return &config.Config{
-		GitHubClientID:      "test-client-id",
-		GitHubClientSecret:  "test-client-secret",
 		JWTSecret:           "test-jwt-secret",
 		FrontendURL:         "http://localhost:5173",
-		GitHubRedirectURL:   "http://localhost:8080/auth/github/callback",
 		ZitadelIssuer:       f.srv.URL,
 		ZitadelClientID:     "todo-zitadel-client",
 		ZitadelClientSecret: "todo-secret",
@@ -529,6 +577,55 @@ func TestZitadelCallbackEmailConflict(t *testing.T) {
 	}
 }
 
+func TestZitadelCallbackAdoptsUnlinkedLocalAccount(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	// Simulate a local password account that already owns this email: the
+	// upsert conflicts because TodoDemo does not merge accounts by email.
+	store.err = repository.ErrEmailConflict
+	store.claimUser = &model.User{
+		ID:           "local-adopted-1",
+		Email:        "zitadel@example.com",
+		DisplayName:  "Old Account",
+		AuthProvider: "zitadel",
+	}
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if store.claimCalls != 1 {
+		t.Fatalf("claim calls = %d, want 1", store.claimCalls)
+	}
+	if store.claimSub != "zitadel-sub-1" || store.claimEmail != "zitadel@example.com" {
+		t.Errorf("claim args = (%q, %q)", store.claimSub, store.claimEmail)
+	}
+	if noJWTCookie(rec.Result()) {
+		t.Error("adopted account should receive a session cookie")
+	}
+}
+
+func TestZitadelCallbackClaimErrorIsInternal(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	store.err = repository.ErrEmailConflict
+	store.claimErr = errors.New("db down")
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusInternalServerError || errorCode(t, rec) != model.ErrCodeInternalError {
+		t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
+	}
+	if !noJWTCookie(rec.Result()) {
+		t.Error("failed account linking must not set a jwt cookie")
+	}
+}
+
 func TestZitadelCallbackFallsBackToUserInfo(t *testing.T) {
 	f := newFakeZitadel(t)
 	h, store := newTestZitadelHandler(t, f)
@@ -554,7 +651,33 @@ func TestZitadelCallbackFallsBackToUserInfo(t *testing.T) {
 	}
 }
 
-func TestZitadelCallbackDropsUnverifiedEmail(t *testing.T) {
+func noJWTCookie(res *http.Response) bool {
+	for _, c := range res.Cookies() {
+		if c.Name == "jwt" && c.Value != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// emailNotVerifiedPayload decodes the self-rescue fields of an
+// EMAIL_NOT_VERIFIED response.
+func emailNotVerifiedPayload(t *testing.T, rec *httptest.ResponseRecorder) (verifyURL string, resent *bool) {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Code                    string `json:"code"`
+			VerifyURL               string `json:"verify_url"`
+			VerificationEmailResent *bool  `json:"verification_email_resent"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error body %q: %v", rec.Body.String(), err)
+	}
+	return body.Error.VerifyURL, body.Error.VerificationEmailResent
+}
+
+func TestZitadelCallbackRejectsUnverifiedEmail(t *testing.T) {
 	f := newFakeZitadel(t)
 	h, store := newTestZitadelHandler(t, f)
 	f.emailVerified = false
@@ -563,14 +686,158 @@ func TestZitadelCallbackDropsUnverifiedEmail(t *testing.T) {
 	f.setNonce(login.query.Get("nonce"))
 
 	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body %s", rec.Code, rec.Body.String())
 	}
-	store.mu.Lock()
-	user := store.users["zitadel-sub-1"]
-	store.mu.Unlock()
-	if user == nil || user.Email != "" {
-		t.Errorf("stored user = %+v, want empty email", user)
+	if got := errorCode(t, rec); got != model.ErrCodeEmailNotVerified {
+		t.Errorf("code = %q, want %q", got, model.ErrCodeEmailNotVerified)
+	}
+	if got := store.savedUsers(); got != 0 {
+		t.Errorf("saved users = %d, want 0", got)
+	}
+	if got := store.callCount(); got != 0 {
+		t.Errorf("upsert calls = %d, want 0", got)
+	}
+	if !noJWTCookie(rec.Result()) {
+		t.Error("unverified login must not set a jwt cookie")
+	}
+	verifyURL, resent := emailNotVerifiedPayload(t, rec)
+	if want := f.srv.URL + "/ui/v2/login"; verifyURL != want {
+		t.Errorf("verify_url = %q, want %q", verifyURL, want)
+	}
+	if resent == nil || !*resent {
+		t.Errorf("verification_email_resent = %v, want true", resent)
+	}
+	if got := f.resendCount(); got != 1 {
+		t.Errorf("resend calls = %d, want 1", got)
+	}
+}
+
+func TestZitadelCallbackResendFailureIsReported(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	f.emailVerified = false
+	f.setResendStatus(http.StatusInternalServerError)
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body %s", rec.Code, rec.Body.String())
+	}
+	verifyURL, resent := emailNotVerifiedPayload(t, rec)
+	if verifyURL == "" {
+		t.Error("verify_url must still be present when the resend fails")
+	}
+	if resent == nil || *resent {
+		t.Errorf("verification_email_resent = %v, want explicit false", resent)
+	}
+	if got := f.resendCount(); got != 1 {
+		t.Errorf("resend calls = %d, want 1", got)
+	}
+	if got := store.callCount(); got != 0 {
+		t.Errorf("upsert calls = %d, want 0", got)
+	}
+}
+
+func TestZitadelCallbackRejectsMissingEmailVerified(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	// No profile/email/email_verified in the id_token and no userinfo fallback:
+	// the claim is missing, so the login must be rejected.
+	f.omitProfile = true
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body %s", rec.Code, rec.Body.String())
+	}
+	if got := errorCode(t, rec); got != model.ErrCodeEmailNotVerified {
+		t.Errorf("code = %q, want %q", got, model.ErrCodeEmailNotVerified)
+	}
+	if got := store.savedUsers(); got != 0 {
+		t.Errorf("saved users = %d, want 0", got)
+	}
+	if !noJWTCookie(rec.Result()) {
+		t.Error("unverified login must not set a jwt cookie")
+	}
+}
+
+func TestZitadelCallbackRejectsUserInfoUnverified(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	f.emailVerified = false
+	f.userInfoEmail = "pending@example.com"
+	f.userInfoVerified = false
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusForbidden || errorCode(t, rec) != model.ErrCodeEmailNotVerified {
+		t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
+	}
+	if got := store.savedUsers(); got != 0 {
+		t.Errorf("saved users = %d, want 0", got)
+	}
+}
+
+func TestZitadelCallbackUnverifiedBrowserRedirectsToLogin(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	f.emailVerified = false
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	target := "/auth/zitadel/callback?code=good-code&state=" + url.QueryEscape(login.query.Get("state"))
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.AddCookie(login.cookie)
+	rec := httptest.NewRecorder()
+	h.Callback(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "http://localhost:5173/login?error=email_not_verified&resent=1" {
+		t.Errorf("redirect = %q", got)
+	}
+	if got := f.resendCount(); got != 1 {
+		t.Errorf("resend calls = %d, want 1", got)
+	}
+	if got := store.savedUsers(); got != 0 {
+		t.Errorf("saved users = %d, want 0", got)
+	}
+	if !noJWTCookie(rec.Result()) {
+		t.Error("unverified login must not set a jwt cookie")
+	}
+}
+
+func TestZitadelCallbackUnverifiedBrowserResendFailure(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, _ := newTestZitadelHandler(t, f)
+	f.emailVerified = false
+	f.setResendStatus(http.StatusInternalServerError)
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	target := "/auth/zitadel/callback?code=good-code&state=" + url.QueryEscape(login.query.Get("state"))
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.AddCookie(login.cookie)
+	rec := httptest.NewRecorder()
+	h.Callback(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "http://localhost:5173/login?error=email_not_verified&resent=0" {
+		t.Errorf("redirect = %q", got)
 	}
 }
 
@@ -667,13 +934,24 @@ func TestZitadelProviders(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	var body struct {
-		Data map[string]bool `json:"data"`
+		Data map[string]any `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !body.Data["github"] || !body.Data["zitadel"] {
+	if body.Data["zitadel"] != true {
 		t.Errorf("providers = %v", body.Data)
+	}
+	if _, ok := body.Data["github"]; ok {
+		t.Errorf("github provider must be gone, providers = %v", body.Data)
+	}
+	wantRegister := f.srv.URL + "/ui/v2/login/register"
+	if got := body.Data["zitadel_register_url"]; got != wantRegister {
+		t.Errorf("zitadel_register_url = %v, want %q", got, wantRegister)
+	}
+	wantVerify := f.srv.URL + "/ui/v2/login"
+	if got := body.Data["zitadel_verify_url"]; got != wantVerify {
+		t.Errorf("zitadel_verify_url = %v, want %q", got, wantVerify)
 	}
 
 	disabled := NewZitadelHandler(testConfig())
@@ -683,8 +961,17 @@ func TestZitadelProviders(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !body.Data["github"] || body.Data["zitadel"] {
+	if body.Data["zitadel"] != false {
 		t.Errorf("providers = %v", body.Data)
+	}
+	if _, ok := body.Data["github"]; ok {
+		t.Errorf("github provider must be gone, providers = %v", body.Data)
+	}
+	if _, ok := body.Data["zitadel_register_url"]; ok {
+		t.Errorf("disabled ZITADEL must not advertise a register URL: %v", body.Data)
+	}
+	if _, ok := body.Data["zitadel_verify_url"]; ok {
+		t.Errorf("disabled ZITADEL must not advertise a verify URL: %v", body.Data)
 	}
 }
 

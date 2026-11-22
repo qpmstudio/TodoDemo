@@ -1,7 +1,21 @@
 {
   "runner": "self-hosted",
   "checks": [
-    {"name": "go", "run": "bash .flow/check.sh go"},
-    {"name": "frontend", "run": "bash .flow/check.sh frontend"}
+    {
+      "name": "go",
+      "run": "bash .flow/check.sh go"
+    },
+    {
+      "name": "frontend",
+      "run": "bash .flow/check.sh frontend"
+    }
+  ],
+  "manualJobs": [
+    {
+      "name": "diff-hygiene",
+      "script": ".flow/check-diff-hygiene.sh",
+      "required": false,
+      "note": "手动追加在 ci.yml，不随本文件生成，不进 required checks"
+    }
   ]
 }

@@ -28,13 +28,16 @@ import (
 // from the issuer instead of being discovered on every login. This keeps the
 // login path to a single token request in the happy case.
 const (
-	pathAuthorize   = "/oauth/v2/authorize"
-	pathToken       = "/oauth/v2/token"
-	pathUserInfo    = "/oidc/v1/userinfo"
-	pathJWKS        = "/oauth/v2/keys"
-	pathEndSession  = "/oidc/v1/end_session"
-	jwksCacheTTL    = time.Hour
-	maxResponseSize = 1 << 20
+	pathAuthorize  = "/oauth/v2/authorize"
+	pathToken      = "/oauth/v2/token"
+	pathUserInfo   = "/oidc/v1/userinfo"
+	pathJWKS       = "/oauth/v2/keys"
+	pathEndSession = "/oidc/v1/end_session"
+	// The Auth v1 API lets a signed-in user trigger their own verification
+	// mail; the Admin API alternative would need a user.write admin token.
+	pathResendEmailVerification = "/auth/v1/users/me/email/_resend_verification"
+	jwksCacheTTL                = time.Hour
+	maxResponseSize             = 1 << 20
 )
 
 // Sentinel errors let the handler map failures to stable HTTP statuses without
@@ -276,6 +279,35 @@ func (c *Client) UserInfo(ctx context.Context, accessToken string) (*Claims, err
 		return nil, fmt.Errorf("%w: userinfo is missing sub", ErrUpstream)
 	}
 	return &claims, nil
+}
+
+// ResendEmailVerification asks ZITADEL to send a fresh verification email to
+// the user who just signed in with accessToken. It is best-effort: callers keep
+// rejecting an unverified login even when this fails, but they report the
+// result so the user knows whether to expect a new mail.
+func (c *Client) ResendEmailVerification(ctx context.Context, accessToken string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.issuer()+pathResendEmailVerification, strings.NewReader("{}"))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUpstream, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	resp, err := c.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: resend verification request: %v", ErrUpstream, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+		return fmt.Errorf("%w: resend verification status %d: %s",
+			ErrUpstream, resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseSize))
+	return nil
 }
 
 func (c *Client) issuer() string { return c.cfg.Issuer }

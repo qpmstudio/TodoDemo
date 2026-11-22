@@ -1,13 +1,11 @@
 package handler
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -18,210 +16,9 @@ import (
 
 func testConfig() *config.Config {
 	return &config.Config{
-		GitHubClientID:     "test-client-id",
-		GitHubClientSecret: "test-client-secret",
-		JWTSecret:          "test-jwt-secret",
-		FrontendURL:        "http://localhost:5173",
-		GitHubRedirectURL:  "http://localhost:8080/auth/github/callback",
-	}
-}
-
-func TestGitHubLogin(t *testing.T) {
-	cfg := testConfig()
-	h := NewAuthHandler(cfg)
-
-	req := httptest.NewRequest("GET", "/auth/github/login", nil)
-	rec := httptest.NewRecorder()
-
-	h.GitHubLogin(rec, req)
-
-	resp := rec.Result()
-	if resp.StatusCode != http.StatusFound {
-		t.Errorf("expected 302, got %d", resp.StatusCode)
-	}
-
-	// Verify state cookie was set
-	cookies := resp.Cookies()
-	var stateCookie *http.Cookie
-	for _, c := range cookies {
-		if c.Name == "oauth_state" {
-			stateCookie = c
-			break
-		}
-	}
-	if stateCookie == nil {
-		t.Error("expected oauth_state cookie")
-	}
-	if stateCookie.HttpOnly != true {
-		t.Error("state cookie should be HttpOnly")
-	}
-
-	// Verify the redirect points at GitHub with the configured OAuth parameters.
-	location := resp.Header.Get("Location")
-	if location == "" {
-		t.Fatal("expected Location header")
-	}
-	authURL, err := url.Parse(location)
-	if err != nil {
-		t.Fatalf("Location is not a valid URL: %v", err)
-	}
-	if authURL.Scheme != "https" || authURL.Host != "github.com" || authURL.Path != "/login/oauth/authorize" {
-		t.Errorf("redirect should go to GitHub authorize, got %s", location)
-	}
-	query := authURL.Query()
-	if got := query.Get("client_id"); got != cfg.GitHubClientID {
-		t.Errorf("expected client_id %q, got %q", cfg.GitHubClientID, got)
-	}
-	if got := query.Get("redirect_uri"); got != cfg.GitHubRedirectURL {
-		t.Errorf("expected redirect_uri %q, got %q", cfg.GitHubRedirectURL, got)
-	}
-	if got := query.Get("scope"); got != "read:user" {
-		t.Errorf("expected scope read:user, got %q", got)
-	}
-	if query.Get("state") == "" {
-		t.Error("expected non-empty state in redirect")
-	}
-}
-
-func TestGitHubLogin_Returns503WhenOAuthNotConfigured(t *testing.T) {
-	tests := []struct {
-		name   string
-		mutate func(*config.Config)
-	}{
-		{"missing client id", func(c *config.Config) { c.GitHubClientID = "" }},
-		{"missing client secret", func(c *config.Config) { c.GitHubClientSecret = "" }},
-		{"missing both", func(c *config.Config) {
-			c.GitHubClientID = ""
-			c.GitHubClientSecret = ""
-		}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := testConfig()
-			tt.mutate(cfg)
-			h := NewAuthHandler(cfg)
-
-			var logs bytes.Buffer
-			logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
-			req := httptest.NewRequest("GET", "/auth/github/login", nil)
-			req = req.WithContext(logging.WithLogger(req.Context(), logger))
-			rec := httptest.NewRecorder()
-
-			h.GitHubLogin(rec, req)
-
-			resp := rec.Result()
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusServiceUnavailable {
-				t.Errorf("expected 503, got %d", resp.StatusCode)
-			}
-			if location := resp.Header.Get("Location"); location != "" {
-				t.Errorf("must not redirect to GitHub, got Location: %s", location)
-			}
-			for _, cookie := range resp.Cookies() {
-				if cookie.Name == "oauth_state" {
-					t.Error("must not set oauth_state cookie when OAuth is not configured")
-				}
-			}
-
-			var apiResp model.APIResponse
-			if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if apiResp.Error == nil {
-				t.Fatal("expected an error response")
-			}
-			if apiResp.Error.Code != model.ErrCodeServiceUnavailable {
-				t.Errorf("expected %s, got %s", model.ErrCodeServiceUnavailable, apiResp.Error.Code)
-			}
-			if !strings.Contains(apiResp.Error.Message, "not configured") {
-				t.Errorf("expected a clear configuration message, got %q", apiResp.Error.Message)
-			}
-
-			logged := logs.String()
-			if !strings.Contains(logged, `"level":"WARN"`) {
-				t.Errorf("expected a warn log, got %q", logged)
-			}
-			if !strings.Contains(logged, "OAuth app not configured") {
-				t.Errorf("expected the warn log to explain the missing config, got %q", logged)
-			}
-		})
-	}
-}
-
-func TestGitHubLogin_ConfiguresRedirectURI(t *testing.T) {
-	cfg := testConfig()
-	cfg.GitHubRedirectURL = "http://example.com/callback"
-	h := NewAuthHandler(cfg)
-
-	req := httptest.NewRequest("GET", "/auth/github/login", nil)
-	rec := httptest.NewRecorder()
-
-	h.GitHubLogin(rec, req)
-
-	location := rec.Header().Get("Location")
-	if !contains(location, "redirect_uri=http%3A%2F%2Fexample.com%2Fcallback") {
-		t.Errorf("redirect should include encoded redirect_uri, got: %s", location)
-	}
-}
-
-func TestGitHubCallback_MissingStateCookie(t *testing.T) {
-	cfg := testConfig()
-	h := NewAuthHandler(cfg)
-
-	req := httptest.NewRequest("GET", "/auth/github/callback?code=test&state=abc", nil)
-	rec := httptest.NewRecorder()
-
-	h.GitHubCallback(rec, req)
-
-	resp := rec.Result()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", resp.StatusCode)
-	}
-
-	var apiResp model.APIResponse
-	json.NewDecoder(resp.Body).Decode(&apiResp)
-	if apiResp.Error == nil || apiResp.Error.Code != model.ErrCodeValidationError {
-		t.Error("expected validation error")
-	}
-}
-
-func TestGitHubCallback_MissingCode(t *testing.T) {
-	cfg := testConfig()
-	h := NewAuthHandler(cfg)
-
-	req := httptest.NewRequest("GET", "/auth/github/callback?state=abc", nil)
-	req.AddCookie(&http.Cookie{
-		Name:  "oauth_state",
-		Value: "abc",
-	})
-	rec := httptest.NewRecorder()
-
-	h.GitHubCallback(rec, req)
-
-	resp := rec.Result()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", resp.StatusCode)
-	}
-}
-
-func TestGitHubCallback_StateMismatch(t *testing.T) {
-	cfg := testConfig()
-	h := NewAuthHandler(cfg)
-
-	req := httptest.NewRequest("GET", "/auth/github/callback?code=test&state=attacker", nil)
-	req.AddCookie(&http.Cookie{
-		Name:  "oauth_state",
-		Value: "original",
-	})
-	rec := httptest.NewRecorder()
-
-	h.GitHubCallback(rec, req)
-
-	resp := rec.Result()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", resp.StatusCode)
+		JWTSecret:     "test-jwt-secret",
+		FrontendURL:   "http://localhost:5173",
+		ZitadelIssuer: "https://auth.example.com",
 	}
 }
 
@@ -262,7 +59,7 @@ func TestCreateJWT(t *testing.T) {
 
 	user := &model.User{
 		ID:          "test-user-id",
-		GitHubLogin: "testlogin",
+		DisplayName: "testlogin",
 	}
 
 	token, err := h.createJWT(user)
@@ -317,128 +114,93 @@ func TestWriteError(t *testing.T) {
 	}
 }
 
-func TestRegister_InvalidEmail(t *testing.T) {
+func TestRegister_Retired(t *testing.T) {
 	cfg := testConfig()
+	cfg.ZitadelRegisterURL = "https://auth.example.com/ui/v2/login/register"
 	h := NewAuthHandler(cfg)
 
-	tests := []struct {
-		name  string
-		email string
-	}{
-		{"missing @", "notanemail"},
-		{"empty", ""},
-		{"no domain", "user@"},
-		{"no user", "@domain.com"},
-		{"with spaces", "user @domain.com"},
+	bodies := []string{
+		`{"email":"user@example.com","password":"password123"}`,
+		`{"email":"notanemail","password":"password123"}`,
+		`{"email":"user@example.com","password":"short"}`,
+		`not json`,
 	}
+	for _, body := range bodies {
+		req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body := `{"email":"` + tt.email + `","password":"password123"}`
-			req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			rec := httptest.NewRecorder()
+		h.Register(rec, req)
 
-			h.Register(rec, req)
-
-			resp := rec.Result()
-			if resp.StatusCode != http.StatusUnprocessableEntity {
-				t.Errorf("expected 422, got %d", resp.StatusCode)
+		resp := rec.Result()
+		if resp.StatusCode != http.StatusGone {
+			t.Errorf("body %q: expected 410, got %d", body, resp.StatusCode)
+		}
+		if got := errorCode(t, rec); got != model.ErrCodeRegistrationMoved {
+			t.Errorf("body %q: code = %q, want %q", body, got, model.ErrCodeRegistrationMoved)
+		}
+		if !strings.Contains(rec.Body.String(), cfg.ZitadelRegisterURL) {
+			t.Errorf("body %q: response should point at the ZITADEL register page: %s", body, rec.Body.String())
+		}
+		for _, c := range resp.Cookies() {
+			if c.Name == "jwt" && c.Value != "" {
+				t.Errorf("body %q: retired register must not set a jwt cookie", body)
 			}
-
-			var apiResp model.APIResponse
-			json.NewDecoder(resp.Body).Decode(&apiResp)
-			if apiResp.Error == nil {
-				t.Fatal("expected error response")
-			}
-			if apiResp.Error.Code != model.ErrCodeValidationError {
-				t.Errorf("expected VALIDATION_ERROR, got %s", apiResp.Error.Code)
-			}
-		})
+		}
 	}
 }
 
-func TestRegister_ShortPassword(t *testing.T) {
+func TestRegister_RetiredWithoutZitadel(t *testing.T) {
 	cfg := testConfig()
+	cfg.ZitadelIssuer = ""
 	h := NewAuthHandler(cfg)
 
-	tests := []struct {
-		name     string
-		password string
-	}{
-		{"empty password", ""},
-		{"1 char", "a"},
-		{"7 chars", "1234567"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body := `{"email":"user@example.com","password":"` + tt.password + `"}`
-			req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			rec := httptest.NewRecorder()
-
-			h.Register(rec, req)
-
-			resp := rec.Result()
-			if resp.StatusCode != http.StatusUnprocessableEntity {
-				t.Errorf("expected 422, got %d", resp.StatusCode)
-			}
-
-			var apiResp model.APIResponse
-			json.NewDecoder(resp.Body).Decode(&apiResp)
-			if apiResp.Error == nil {
-				t.Fatal("expected error response")
-			}
-			if apiResp.Error.Code != model.ErrCodeValidationError {
-				t.Errorf("expected VALIDATION_ERROR, got %s", apiResp.Error.Code)
-			}
-		})
-	}
-}
-
-func TestRegister_InvalidJSON(t *testing.T) {
-	cfg := testConfig()
-	h := NewAuthHandler(cfg)
-
-	req := httptest.NewRequest("POST", "/auth/register", strings.NewReader("not json"))
-	req.Header.Set("Content-Type", "application/json")
+	req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(`{"email":"user@example.com","password":"password123"}`))
 	rec := httptest.NewRecorder()
-
 	h.Register(rec, req)
 
-	resp := rec.Result()
-	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Errorf("expected 422, got %d", resp.StatusCode)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("status = %d, want 410", rec.Code)
+	}
+	if got := errorCode(t, rec); got != model.ErrCodeRegistrationMoved {
+		t.Errorf("code = %q, want %q", got, model.ErrCodeRegistrationMoved)
 	}
 }
 
-func TestLogin_InvalidJSON(t *testing.T) {
+func TestLogin_Retired(t *testing.T) {
 	cfg := testConfig()
+	cfg.ZitadelVerifyURL = "https://auth.example.com/ui/v2/login"
 	h := NewAuthHandler(cfg)
 
-	req := httptest.NewRequest("POST", "/auth/login", strings.NewReader("not json"))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-
-	h.Login(rec, req)
-
-	resp := rec.Result()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", resp.StatusCode)
+	bodies := []string{
+		`{"email":"user@example.com","password":"password123"}`,
+		`{"email":"notanemail","password":"password123"}`,
+		`not json`,
+		``,
 	}
-}
+	for _, body := range bodies {
+		req := httptest.NewRequest("POST", "/auth/login", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
 
-func TestLogin_NonexistentUser(t *testing.T) {
-	t.Skip("requires database connection")
-}
+		h.Login(rec, req)
 
-func TestRegister_Success(t *testing.T) {
-	t.Skip("requires database connection")
-}
-
-func TestLogin_Success(t *testing.T) {
-	t.Skip("requires database connection")
+		resp := rec.Result()
+		if resp.StatusCode != http.StatusGone {
+			t.Errorf("body %q: expected 410, got %d", body, resp.StatusCode)
+		}
+		if got := errorCode(t, rec); got != model.ErrCodeLoginMoved {
+			t.Errorf("body %q: code = %q, want %q", body, got, model.ErrCodeLoginMoved)
+		}
+		if !strings.Contains(rec.Body.String(), cfg.ZitadelVerifyURL) {
+			t.Errorf("body %q: response should point at the ZITADEL login: %s", body, rec.Body.String())
+		}
+		for _, c := range resp.Cookies() {
+			if c.Name == "jwt" && c.Value != "" {
+				t.Errorf("body %q: retired login must not set a jwt cookie", body)
+			}
+		}
+	}
 }
 
 func TestSetJWTCookie(t *testing.T) {
@@ -484,17 +246,4 @@ func TestWriteJSON(t *testing.T) {
 	if apiResp.Error != nil {
 		t.Error("expected no error")
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

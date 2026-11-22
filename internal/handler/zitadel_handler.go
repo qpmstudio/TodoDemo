@@ -33,6 +33,7 @@ const (
 // a fake; production uses repositoryUserStore.
 type zitadelUserStore interface {
 	UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string) (*model.User, error)
+	ClaimUnlinkedUserByEmail(ctx context.Context, sub, email string) (*model.User, error)
 }
 
 type repositoryUserStore struct{}
@@ -41,12 +42,17 @@ func (repositoryUserStore) UpsertUserByZitadelSub(ctx context.Context, sub, emai
 	return repository.UpsertUserByZitadelSub(ctx, sub, email, displayName)
 }
 
+func (repositoryUserStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email string) (*model.User, error) {
+	return repository.ClaimUnlinkedUserByEmail(ctx, sub, email)
+}
+
 // oidcClient is the protocol surface used by the handler.
 type oidcClient interface {
 	AuthCodeURL(state, nonce, codeVerifier string) string
 	Exchange(ctx context.Context, code, codeVerifier string) (*zitadel.Token, error)
 	VerifyIDToken(ctx context.Context, rawToken, expectedNonce string) (*zitadel.Claims, error)
 	UserInfo(ctx context.Context, accessToken string) (*zitadel.Claims, error)
+	ResendEmailVerification(ctx context.Context, accessToken string) error
 	EndSessionURL(idTokenHint, postLogoutRedirect string) string
 }
 
@@ -187,7 +193,8 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	email, name, username := zitadelProfileParts(claims)
-	if email == "" || name == "" {
+	verified := claims.EmailVerified
+	if !verified || email == "" || name == "" {
 		// ZITADEL may omit profile/email from the id_token when an access token
 		// is issued. The userinfo endpoint is authoritative for those claims.
 		info, infoErr := h.oidc.UserInfo(r.Context(), token.AccessToken)
@@ -196,8 +203,11 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 				"zitadel userinfo unavailable; continuing with id_token claims", "error", infoErr)
 		} else {
 			infoEmail, infoName, infoUsername := zitadelProfileParts(info)
-			if email == "" {
-				email = infoEmail
+			if info.EmailVerified && infoEmail != "" {
+				verified = true
+				if email == "" {
+					email = infoEmail
+				}
 			}
 			if name == "" {
 				name = infoName
@@ -208,15 +218,76 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Second gate: even when ZITADEL's login page lets an unverified account
+	// through, TodoDemo must not create a session or a local user for it.
+	if !verified || email == "" {
+		logger := logging.FromContext(r.Context())
+		// Rejecting alone would strand accounts that predate email
+		// verification (some are ACTIVE yet unverified), so the rejection
+		// carries a verify link and we ask ZITADEL to send a fresh mail using
+		// the user's own access token. A resend failure is reported, never
+		// hidden, but it never turns into a login.
+		resent := false
+		if token.AccessToken == "" {
+			logger.WarnContext(r.Context(),
+				"cannot resend verification email: no access token", "sub", claims.Subject)
+		} else if err := h.oidc.ResendEmailVerification(r.Context(), token.AccessToken); err != nil {
+			logger.WarnContext(r.Context(),
+				"resend verification email failed", "sub", claims.Subject, "error", err)
+		} else {
+			resent = true
+		}
+		logger.WarnContext(r.Context(),
+			"zitadel login rejected: email is not verified",
+			"sub", claims.Subject, "verification_email_resent", resent)
+
+		if wantsHTML(r) {
+			// Carry the resend outcome so the login page can tell the user
+			// whether to expect a new mail or to open ZITADEL themselves.
+			target := h.cfg.FrontendURL + "/login?error=email_not_verified"
+			if resent {
+				target += "&resent=1"
+			} else {
+				target += "&resent=0"
+			}
+			http.Redirect(w, r, target, http.StatusFound)
+			return
+		}
+		writeAPIError(w, r, http.StatusForbidden, &model.APIError{
+			Code:                    model.ErrCodeEmailNotVerified,
+			Message:                 "Email is not verified; open the verification link from ZITADEL and sign in again",
+			VerifyURL:               h.cfg.VerifyURL(),
+			VerificationEmailResent: &resent,
+		}, nil)
+		return
+	}
+
 	user, err := h.store.UpsertUserByZitadelSub(r.Context(), claims.Subject, email, zitadelDisplayName(name, username, email))
 	if err != nil {
 		if errors.Is(err, repository.ErrEmailConflict) {
-			writeError(w, r, http.StatusConflict, model.ErrCodeAccountEmailConflict,
-				"This email already belongs to another account; sign in with that method instead", err)
+			// Local accounts created before ZITADEL owned registration keep
+			// their email. Now that ZITADEL verified that same address, adopt
+			// the row (and its todos) instead of rejecting the login; only
+			// an email that already belongs to another ZITADEL subject is a
+			// real conflict.
+			claimed, claimErr := h.store.ClaimUnlinkedUserByEmail(r.Context(), claims.Subject, email)
+			if claimErr != nil {
+				writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError,
+					"Failed to link user account", claimErr)
+				return
+			}
+			if claimed == nil {
+				writeError(w, r, http.StatusConflict, model.ErrCodeAccountEmailConflict,
+					"This email already belongs to another account; sign in with that method instead", err)
+				return
+			}
+			logging.FromContext(r.Context()).InfoContext(r.Context(),
+				"zitadel login adopted an unlinked local account", "user_id", claimed.ID)
+			user = claimed
+		} else {
+			writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to save user", err)
 			return
 		}
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to save user", err)
-		return
 	}
 
 	jwtToken, err := createJWT(h.cfg, user)
@@ -263,12 +334,23 @@ func (h *ZitadelHandler) Logout(w http.ResponseWriter, r *http.Request) {
 }
 
 // Providers reports which login methods are available. It is registered as a
-// public endpoint so the login page can hide unconfigured providers.
+// public endpoint so the login page can hide unconfigured providers. ZITADEL
+// is the only entry: TodoDemo no longer offers password or GitHub sign-in.
 func (h *ZitadelHandler) Providers(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{
-		"github":  h.cfg.GitHubClientID != "" && h.cfg.GitHubClientSecret != "",
+	providers := map[string]any{
 		"zitadel": h.cfg.ZitadelEnabled(),
-	})
+	}
+	if h.cfg.ZitadelEnabled() {
+		providers["zitadel_register_url"] = h.cfg.RegisterURL()
+		providers["zitadel_verify_url"] = h.cfg.VerifyURL()
+	}
+	writeJSON(w, http.StatusOK, providers)
+}
+
+// wantsHTML reports whether the request is a browser top-level navigation, so
+// login failures can redirect back to the SPA instead of returning JSON.
+func wantsHTML(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 func (h *ZitadelHandler) postLogoutURL() string {

@@ -90,8 +90,6 @@ func main() {
 	todoHandler := handler.NewTodoHandler(cfg)
 
 	// Auth routes (public)
-	r.Get("/auth/github/login", authHandler.GitHubLogin)
-	r.Get("/auth/github/callback", authHandler.GitHubCallback)
 	r.Get("/auth/zitadel/login", zitadelHandler.Login)
 	r.Get("/auth/zitadel/callback", zitadelHandler.Callback)
 	r.Get("/auth/zitadel/logout", zitadelHandler.Logout)
