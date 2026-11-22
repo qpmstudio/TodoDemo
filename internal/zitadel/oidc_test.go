@@ -228,6 +228,8 @@ func TestExchangeErrors(t *testing.T) {
 		wantErr error
 	}{
 		{"rejected code", http.StatusBadRequest, `{"error":"invalid_grant"}`, ErrCodeRejected},
+		{"invalid client", http.StatusUnauthorized, `{"error":"invalid_client"}`, ErrUpstream},
+		{"rate limited", http.StatusTooManyRequests, `{"error":"too_many_requests"}`, ErrUpstream},
 		{"upstream 500", http.StatusInternalServerError, `oops`, ErrUpstream},
 		{"missing id_token", http.StatusOK, `{"access_token":"a"}`, ErrUpstream},
 	}

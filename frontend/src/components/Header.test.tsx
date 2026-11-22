@@ -30,8 +30,7 @@ describe('Header', () => {
   it('renders logo', () => {
     renderWithAuth({
       id: '1',
-      github_login: 'test',
-      github_avatar_url: 'https://example.com/avatar.png',
+      avatar_url: 'https://example.com/avatar.png',
       display_name: 'Test User',
       created_at: '',
       updated_at: '',
@@ -42,8 +41,7 @@ describe('Header', () => {
   it('shows user info when authenticated', () => {
     renderWithAuth({
       id: '1',
-      github_login: 'test',
-      github_avatar_url: 'https://example.com/avatar.png',
+      avatar_url: 'https://example.com/avatar.png',
       display_name: 'Test User',
       created_at: '',
       updated_at: '',
@@ -56,8 +54,7 @@ describe('Header', () => {
     const logoutMock = vi.fn();
     renderWithAuth({
       id: '1',
-      github_login: 'test',
-      github_avatar_url: 'https://example.com/avatar.png',
+      avatar_url: 'https://example.com/avatar.png',
       display_name: 'Test User',
       created_at: '',
       updated_at: '',

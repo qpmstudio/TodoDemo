@@ -9,9 +9,9 @@ export function Header() {
       <div className="header__user">
         {user && (
           <>
-            {user.github_avatar_url && (
+            {user.avatar_url && (
               <img
-                src={user.github_avatar_url}
+                src={user.avatar_url}
                 alt={user.display_name}
                 className="header__avatar"
               />

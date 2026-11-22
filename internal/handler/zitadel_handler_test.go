@@ -120,6 +120,8 @@ type fakeZitadel struct {
 	emailVerified    bool
 	omitProfile      bool
 	tokenStatus      int
+	tokenBody        string
+	jwksStatus       int
 	wrongKey         bool
 	tokenCalls       int
 	userInfoEmail    string
@@ -162,6 +164,14 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 }
 
 func (f *fakeZitadel) handleJWKS(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	status := f.jwksStatus
+	f.mu.Unlock()
+	if status != 0 && status != http.StatusOK {
+		w.WriteHeader(status)
+		fmt.Fprint(w, `{"error":"keys unavailable"}`)
+		return
+	}
 	pub := f.key.PublicKey
 	body := map[string]any{"keys": []map[string]string{{
 		"kty": "RSA",
@@ -183,7 +193,11 @@ func (f *fakeZitadel) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	if f.tokenStatus != 0 && f.tokenStatus != http.StatusOK {
 		w.WriteHeader(f.tokenStatus)
-		fmt.Fprint(w, `{"error":"server_error"}`)
+		body := f.tokenBody
+		if body == "" {
+			body = `{"error":"server_error"}`
+		}
+		fmt.Fprint(w, body)
 		return
 	}
 	if r.PostForm.Get("code") != "good-code" {
@@ -290,6 +304,8 @@ func (f *fakeZitadel) setNonce(nonce string) {
 
 func (f *fakeZitadel) setResendStatus(status int)   { f.resendStatus = status }
 func (f *fakeZitadel) setTokenStatus(status int)    { f.tokenStatus = status }
+func (f *fakeZitadel) setTokenBody(body string)     { f.tokenBody = body }
+func (f *fakeZitadel) setJWKSStatus(status int)     { f.jwksStatus = status }
 func (f *fakeZitadel) setExpiresIn(d time.Duration) { f.expiresIn = d }
 func (f *fakeZitadel) setWrongKey(wrong bool)       { f.wrongKey = wrong }
 
@@ -524,17 +540,53 @@ func TestZitadelCallbackTokenErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("upstream 500", func(t *testing.T) {
-		f := newFakeZitadel(t)
-		h, _ := newTestZitadelHandler(t, f)
-		login := doZitadelLogin(t, h, "/auth/zitadel/login")
-		f.setTokenStatus(http.StatusInternalServerError)
+	upstreamCases := []struct {
+		name       string
+		status     int
+		body       string
+		wantStatus int
+		wantCode   string
+	}{
+		{"upstream 500", http.StatusInternalServerError, `{"error":"server_error"}`, http.StatusBadGateway, model.ErrCodeUpstreamUnavailable},
+		{"invalid client", http.StatusUnauthorized, `{"error":"invalid_client","error_description":"client authentication failed"}`, http.StatusBadGateway, model.ErrCodeUpstreamUnavailable},
+		{"rate limited", http.StatusTooManyRequests, `{"error":"rate_limit","error_description":"too many requests"}`, http.StatusBadGateway, model.ErrCodeUpstreamUnavailable},
+	}
+	for _, tt := range upstreamCases {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeZitadel(t)
+			h, _ := newTestZitadelHandler(t, f)
+			login := doZitadelLogin(t, h, "/auth/zitadel/login")
+			f.setTokenStatus(tt.status)
+			f.setTokenBody(tt.body)
 
-		rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
-		if rec.Code != http.StatusBadGateway || errorCode(t, rec) != model.ErrCodeUpstreamUnavailable {
-			t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
-		}
-	})
+			rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+			if rec.Code != tt.wantStatus || errorCode(t, rec) != tt.wantCode {
+				t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
+			}
+			// The browser must never see the upstream error text.
+			if strings.Contains(rec.Body.String(), "invalid_client") ||
+				strings.Contains(rec.Body.String(), "client authentication failed") ||
+				strings.Contains(rec.Body.String(), "rate_limit") {
+				t.Fatalf("response leaked upstream error: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestZitadelCallbackJWKSUnavailable(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, _ := newTestZitadelHandler(t, f)
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+	f.setJWKSStatus(http.StatusServiceUnavailable)
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusBadGateway || errorCode(t, rec) != model.ErrCodeUpstreamUnavailable {
+		t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
+	}
+	if strings.Contains(rec.Body.String(), "jwks") {
+		t.Fatalf("response leaked upstream error: %s", rec.Body.String())
+	}
 }
 
 func TestZitadelCallbackIDTokenErrors(t *testing.T) {

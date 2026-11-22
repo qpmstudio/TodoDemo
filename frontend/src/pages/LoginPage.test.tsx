@@ -128,9 +128,8 @@ describe('LoginPage', () => {
   it('redirects to /todos when authenticated', () => {
     const authedUser = {
       id: '1',
-      github_login: '',
-      github_avatar_url: '',
       display_name: 'Test',
+      avatar_url: '',
       created_at: '',
       updated_at: '',
     };

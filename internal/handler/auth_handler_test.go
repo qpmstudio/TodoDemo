@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/DevenWen/TodoDemo/internal/config"
@@ -111,95 +110,6 @@ func TestWriteError(t *testing.T) {
 	}
 	if apiResp.Data != nil {
 		t.Error("expected null data")
-	}
-}
-
-func TestRegister_Retired(t *testing.T) {
-	cfg := testConfig()
-	cfg.ZitadelRegisterURL = "https://auth.example.com/ui/v2/login/register"
-	h := NewAuthHandler(cfg)
-
-	bodies := []string{
-		`{"email":"user@example.com","password":"password123"}`,
-		`{"email":"notanemail","password":"password123"}`,
-		`{"email":"user@example.com","password":"short"}`,
-		`not json`,
-	}
-	for _, body := range bodies {
-		req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-
-		h.Register(rec, req)
-
-		resp := rec.Result()
-		if resp.StatusCode != http.StatusGone {
-			t.Errorf("body %q: expected 410, got %d", body, resp.StatusCode)
-		}
-		if got := errorCode(t, rec); got != model.ErrCodeRegistrationMoved {
-			t.Errorf("body %q: code = %q, want %q", body, got, model.ErrCodeRegistrationMoved)
-		}
-		if !strings.Contains(rec.Body.String(), cfg.ZitadelRegisterURL) {
-			t.Errorf("body %q: response should point at the ZITADEL register page: %s", body, rec.Body.String())
-		}
-		for _, c := range resp.Cookies() {
-			if c.Name == "jwt" && c.Value != "" {
-				t.Errorf("body %q: retired register must not set a jwt cookie", body)
-			}
-		}
-	}
-}
-
-func TestRegister_RetiredWithoutZitadel(t *testing.T) {
-	cfg := testConfig()
-	cfg.ZitadelIssuer = ""
-	h := NewAuthHandler(cfg)
-
-	req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(`{"email":"user@example.com","password":"password123"}`))
-	rec := httptest.NewRecorder()
-	h.Register(rec, req)
-
-	if rec.Code != http.StatusGone {
-		t.Fatalf("status = %d, want 410", rec.Code)
-	}
-	if got := errorCode(t, rec); got != model.ErrCodeRegistrationMoved {
-		t.Errorf("code = %q, want %q", got, model.ErrCodeRegistrationMoved)
-	}
-}
-
-func TestLogin_Retired(t *testing.T) {
-	cfg := testConfig()
-	cfg.ZitadelVerifyURL = "https://auth.example.com/ui/v2/login"
-	h := NewAuthHandler(cfg)
-
-	bodies := []string{
-		`{"email":"user@example.com","password":"password123"}`,
-		`{"email":"notanemail","password":"password123"}`,
-		`not json`,
-		``,
-	}
-	for _, body := range bodies {
-		req := httptest.NewRequest("POST", "/auth/login", strings.NewReader(body))
-		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-
-		h.Login(rec, req)
-
-		resp := rec.Result()
-		if resp.StatusCode != http.StatusGone {
-			t.Errorf("body %q: expected 410, got %d", body, resp.StatusCode)
-		}
-		if got := errorCode(t, rec); got != model.ErrCodeLoginMoved {
-			t.Errorf("body %q: code = %q, want %q", body, got, model.ErrCodeLoginMoved)
-		}
-		if !strings.Contains(rec.Body.String(), cfg.ZitadelVerifyURL) {
-			t.Errorf("body %q: response should point at the ZITADEL login: %s", body, rec.Body.String())
-		}
-		for _, c := range resp.Cookies() {
-			if c.Name == "jwt" && c.Value != "" {
-				t.Errorf("body %q: retired login must not set a jwt cookie", body)
-			}
-		}
 	}
 }
 

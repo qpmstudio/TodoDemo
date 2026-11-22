@@ -61,8 +61,8 @@ type oidcClient interface {
 	EndSessionURL(idTokenHint, postLogoutRedirect string) string
 }
 
-// ZitadelHandler implements the authorization-code + PKCE login. The resulting
-// session is TODO's own JWT cookie, exactly like GitHub and password logins.
+// ZitadelHandler implements the authorization-code + PKCE login. ZITADEL is
+// the only identity provider; the resulting session is TodoDemo's own JWT cookie.
 type ZitadelHandler struct {
 	cfg   *config.Config
 	oidc  oidcClient
@@ -193,6 +193,13 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := h.oidc.VerifyIDToken(r.Context(), token.IDToken, state.Nonce)
 	if err != nil {
+		if errors.Is(err, zitadel.ErrUpstream) {
+			// The signing keys could not be fetched: ZITADEL, not the user's
+			// id_token, is the failing side.
+			writeError(w, r, http.StatusBadGateway, model.ErrCodeUpstreamUnavailable,
+				"ZITADEL signing keys unavailable", err)
+			return
+		}
 		writeError(w, r, http.StatusUnauthorized, model.ErrCodeOAuthIDTokenInvalid, "Invalid ZITADEL id_token", err)
 		return
 	}

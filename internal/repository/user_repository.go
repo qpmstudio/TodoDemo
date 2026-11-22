@@ -42,13 +42,13 @@ func UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string)
 		   email = COALESCE(EXCLUDED.email, users.email),
 		   display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name),
 		   updated_at = EXCLUDED.updated_at
-		 RETURNING id, zitadel_sub, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(auth_provider, ''), created_at, updated_at`,
+		 RETURNING id, zitadel_sub, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(avatar_url, ''), COALESCE(auth_provider, ''), created_at, updated_at`,
 		sub,
 		emailArg,
 		displayName,
 		now,
 		now,
-	).Scan(&user.ID, &user.ZitadelSub, &user.Email, &user.DisplayName, &user.AuthProvider, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.ZitadelSub, &user.Email, &user.DisplayName, &user.AvatarURL, &user.AuthProvider, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_users_email" {
@@ -64,9 +64,9 @@ func UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string)
 func GetUserByZitadelSub(ctx context.Context, sub string) (*model.User, error) {
 	user := &model.User{}
 	err := database.Pool.QueryRow(ctx,
-		`SELECT id, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(auth_provider, '')
+		`SELECT id, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(avatar_url, ''), COALESCE(auth_provider, '')
 		   FROM users WHERE zitadel_sub = $1`, sub,
-	).Scan(&user.ID, &user.Email, &user.DisplayName, &user.AuthProvider)
+	).Scan(&user.ID, &user.Email, &user.DisplayName, &user.AvatarURL, &user.AuthProvider)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -130,9 +130,9 @@ func ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName strin
 		        display_name = COALESCE(NULLIF($2, ''), display_name),
 		        updated_at = $3
 		  WHERE id = $4
-		  RETURNING id, zitadel_sub, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(auth_provider, ''), created_at, updated_at`,
+		  RETURNING id, zitadel_sub, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(avatar_url, ''), COALESCE(auth_provider, ''), created_at, updated_at`,
 		sub, displayName, time.Now(), ids[0],
-	).Scan(&user.ID, &user.ZitadelSub, &user.Email, &user.DisplayName, &user.AuthProvider, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.ZitadelSub, &user.Email, &user.DisplayName, &user.AvatarURL, &user.AuthProvider, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, 1, err
 	}
@@ -146,9 +146,9 @@ func ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName strin
 func GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	user := &model.User{}
 	err := database.Pool.QueryRow(ctx,
-		`SELECT id, github_id, COALESCE(github_login, ''), COALESCE(github_avatar_url, ''), COALESCE(email, ''), zitadel_sub, COALESCE(auth_provider, ''), display_name, created_at, updated_at
+		`SELECT id, COALESCE(email, ''), zitadel_sub, COALESCE(auth_provider, ''), display_name, COALESCE(avatar_url, ''), created_at, updated_at
 		 FROM users WHERE id = $1`, id,
-	).Scan(&user.ID, &user.GitHubID, &user.GitHubLogin, &user.GitHubAvatarURL, &user.Email, &user.ZitadelSub, &user.AuthProvider, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Email, &user.ZitadelSub, &user.AuthProvider, &user.DisplayName, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

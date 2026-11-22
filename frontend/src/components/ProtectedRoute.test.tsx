@@ -25,7 +25,7 @@ function renderWithAuth(user: any, loading = false) {
 
 describe('ProtectedRoute', () => {
   it('renders children when authenticated', () => {
-    renderWithAuth({ id: '1', github_login: 'test', github_avatar_url: '', display_name: 'Test', created_at: '', updated_at: '' });
+    renderWithAuth({ id: '1', display_name: 'Test', avatar_url: '', created_at: '', updated_at: '' });
     expect(screen.getByText('Protected Content')).toBeInTheDocument();
   });
 

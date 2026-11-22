@@ -50,9 +50,8 @@ export interface TodoListMeta {
 
 export interface User {
   id: string;
-  github_login: string;
-  github_avatar_url: string;
   display_name: string;
+  avatar_url: string;
   created_at: string;
   updated_at: string;
 }
