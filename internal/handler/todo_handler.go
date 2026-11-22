@@ -70,7 +70,7 @@ func (h *TodoHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	filter := repository.TodoFilter{
 		UserID:  userID,
-		Page:    queryInt(r, "page", 1),
+		Page:    normalizePage(queryInt(r, "page", 1)),
 		PerPage: normalizePerPage(queryInt(r, "per_page", defaultPerPage)),
 	}
 
@@ -196,6 +196,15 @@ func writeListResponse(w http.ResponseWriter, status int, data interface{}, meta
 }
 
 // normalizePerPage clamps a requested page size to the API contract.
+// normalizePage keeps meta.page honest: the repository treats page<1 as page 1,
+// so the handler must report the same effective page.
+func normalizePage(n int) int {
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
 func normalizePerPage(n int) int {
 	if n < 1 {
 		return defaultPerPage

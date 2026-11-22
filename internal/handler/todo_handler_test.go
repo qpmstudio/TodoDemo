@@ -174,11 +174,11 @@ func TestUpdateTodo_Validation(t *testing.T) {
 
 func TestQueryInt(t *testing.T) {
 	tests := []struct {
-		name    string
-		url     string
-		key     string
-		def     int
-		want    int
+		name string
+		url  string
+		key  string
+		def  int
+		want int
 	}{
 		{"valid", "/test?page=5", "page", 1, 5},
 		{"missing", "/test", "page", 1, 1},
@@ -346,7 +346,7 @@ func TestListTodos_PerPageNormalized(t *testing.T) {
 			}
 
 			var body struct {
-				Data []model.Todo      `json:"data"`
+				Data []model.Todo       `json:"data"`
 				Meta model.TodoListMeta `json:"meta"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -364,6 +364,47 @@ func TestListTodos_PerPageNormalized(t *testing.T) {
 			}
 			if len(body.Data) != wantLen {
 				t.Fatalf("expected %d rows, got %d", wantLen, len(body.Data))
+			}
+		})
+	}
+}
+func TestListTodos_PageNormalized(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{"zero", "?page=0", 1},
+		{"negative", "?page=-5", 1},
+		{"valid", "?page=2", 2},
+		{"default", "", 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeTodoStore{listTotal: 1}
+			h := newTodoHandlerWithStore(testTodoConfig(), store)
+
+			req := httptest.NewRequest("GET", "/api/v1/todos"+tt.query, nil)
+			req = addUserToContext(req)
+			rec := httptest.NewRecorder()
+
+			h.List(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d", rec.Code)
+			}
+			if store.listFilter.Page != tt.want {
+				t.Fatalf("expected repository page %d, got %d", tt.want, store.listFilter.Page)
+			}
+
+			var body struct {
+				Meta model.TodoListMeta `json:"meta"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if body.Meta.Page != tt.want {
+				t.Fatalf("expected meta.page %d, got %d", tt.want, body.Meta.Page)
 			}
 		})
 	}
