@@ -27,12 +27,26 @@ type Config struct {
 	ZitadelClientSecret  string
 	ZitadelRedirectURL   string
 	ZitadelPostLogoutURL string
+	ZitadelRegisterURL   string
 }
 
 // ZitadelEnabled reports whether ZITADEL login has enough configuration to
 // start an authorization request.
 func (c *Config) ZitadelEnabled() bool {
 	return c.ZitadelIssuer != "" && c.ZitadelClientID != "" && c.ZitadelRedirectURL != ""
+}
+
+// RegisterURL is where new users create their account. Registration and email
+// verification live in ZITADEL; TodoDemo no longer accepts self-service
+// sign-ups. It defaults to the hosted login's registration page.
+func (c *Config) RegisterURL() string {
+	if c.ZitadelRegisterURL != "" {
+		return c.ZitadelRegisterURL
+	}
+	if c.ZitadelIssuer == "" {
+		return ""
+	}
+	return strings.TrimRight(c.ZitadelIssuer, "/") + "/ui/v2/login/register"
 }
 
 // Load reads configuration from environment variables.
@@ -52,6 +66,7 @@ func Load() (*Config, error) {
 		ZitadelClientSecret:  os.Getenv("ZITADEL_CLIENT_SECRET"),
 		ZitadelRedirectURL:   getEnv("ZITADEL_REDIRECT_URL", "http://localhost:8080/auth/zitadel/callback"),
 		ZitadelPostLogoutURL: os.Getenv("ZITADEL_POST_LOGOUT_URL"),
+		ZitadelRegisterURL:   os.Getenv("ZITADEL_REGISTER_URL"),
 	}
 
 	// Validate required config

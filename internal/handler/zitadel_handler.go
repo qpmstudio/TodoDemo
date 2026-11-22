@@ -187,7 +187,8 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	email, name, username := zitadelProfileParts(claims)
-	if email == "" || name == "" {
+	verified := claims.EmailVerified
+	if !verified || email == "" || name == "" {
 		// ZITADEL may omit profile/email from the id_token when an access token
 		// is issued. The userinfo endpoint is authoritative for those claims.
 		info, infoErr := h.oidc.UserInfo(r.Context(), token.AccessToken)
@@ -196,8 +197,11 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 				"zitadel userinfo unavailable; continuing with id_token claims", "error", infoErr)
 		} else {
 			infoEmail, infoName, infoUsername := zitadelProfileParts(info)
-			if email == "" {
-				email = infoEmail
+			if info.EmailVerified && infoEmail != "" {
+				verified = true
+				if email == "" {
+					email = infoEmail
+				}
 			}
 			if name == "" {
 				name = infoName
@@ -206,6 +210,20 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 				username = infoUsername
 			}
 		}
+	}
+
+	// Second gate: even when ZITADEL's login page lets an unverified account
+	// through, TodoDemo must not create a session or a local user for it.
+	if !verified || email == "" {
+		logging.FromContext(r.Context()).WarnContext(r.Context(),
+			"zitadel login rejected: email is not verified", "sub", claims.Subject)
+		if wantsHTML(r) {
+			http.Redirect(w, r, h.cfg.FrontendURL+"/login?error=email_not_verified", http.StatusFound)
+			return
+		}
+		writeError(w, r, http.StatusForbidden, model.ErrCodeEmailNotVerified,
+			"Email is not verified; complete the verification email from ZITADEL before signing in", nil)
+		return
 	}
 
 	user, err := h.store.UpsertUserByZitadelSub(r.Context(), claims.Subject, email, zitadelDisplayName(name, username, email))
@@ -265,10 +283,20 @@ func (h *ZitadelHandler) Logout(w http.ResponseWriter, r *http.Request) {
 // Providers reports which login methods are available. It is registered as a
 // public endpoint so the login page can hide unconfigured providers.
 func (h *ZitadelHandler) Providers(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{
+	providers := map[string]any{
 		"github":  h.cfg.GitHubClientID != "" && h.cfg.GitHubClientSecret != "",
 		"zitadel": h.cfg.ZitadelEnabled(),
-	})
+	}
+	if h.cfg.ZitadelEnabled() {
+		providers["zitadel_register_url"] = h.cfg.RegisterURL()
+	}
+	writeJSON(w, http.StatusOK, providers)
+}
+
+// wantsHTML reports whether the request is a browser top-level navigation, so
+// login failures can redirect back to the SPA instead of returning JSON.
+func wantsHTML(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
 func (h *ZitadelHandler) postLogoutURL() string {

@@ -91,9 +91,10 @@ type fakeZitadel struct {
 	tokenStatus    int
 	wrongKey       bool
 	tokenCalls     int
-	userInfoEmail  string
-	userInfoName   string
-	userInfoCalled int
+	userInfoEmail    string
+	userInfoName     string
+	userInfoVerified bool
+	userInfoCalled   int
 }
 
 func newFakeZitadel(t *testing.T) *fakeZitadel {
@@ -113,7 +114,8 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 		expiresIn:     5 * time.Minute,
 		email:         "zitadel@example.com",
 		name:          "ZITADEL User",
-		emailVerified: true,
+		emailVerified:    true,
+		userInfoVerified: true,
 	}
 
 	mux := http.NewServeMux()
@@ -215,7 +217,7 @@ func (f *fakeZitadel) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"sub":            "zitadel-sub-1",
 		"email":          f.userInfoEmail,
-		"email_verified": true,
+		"email_verified": f.userInfoVerified,
 		"name":           f.userInfoName,
 	})
 }
@@ -554,7 +556,16 @@ func TestZitadelCallbackFallsBackToUserInfo(t *testing.T) {
 	}
 }
 
-func TestZitadelCallbackDropsUnverifiedEmail(t *testing.T) {
+func noJWTCookie(res *http.Response) bool {
+	for _, c := range res.Cookies() {
+		if c.Name == "jwt" && c.Value != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func TestZitadelCallbackRejectsUnverifiedEmail(t *testing.T) {
 	f := newFakeZitadel(t)
 	h, store := newTestZitadelHandler(t, f)
 	f.emailVerified = false
@@ -563,14 +574,93 @@ func TestZitadelCallbackDropsUnverifiedEmail(t *testing.T) {
 	f.setNonce(login.query.Get("nonce"))
 
 	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body %s", rec.Code, rec.Body.String())
 	}
-	store.mu.Lock()
-	user := store.users["zitadel-sub-1"]
-	store.mu.Unlock()
-	if user == nil || user.Email != "" {
-		t.Errorf("stored user = %+v, want empty email", user)
+	if got := errorCode(t, rec); got != model.ErrCodeEmailNotVerified {
+		t.Errorf("code = %q, want %q", got, model.ErrCodeEmailNotVerified)
+	}
+	if got := store.savedUsers(); got != 0 {
+		t.Errorf("saved users = %d, want 0", got)
+	}
+	if got := store.callCount(); got != 0 {
+		t.Errorf("upsert calls = %d, want 0", got)
+	}
+	if !noJWTCookie(rec.Result()) {
+		t.Error("unverified login must not set a jwt cookie")
+	}
+}
+
+func TestZitadelCallbackRejectsMissingEmailVerified(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	// No profile/email/email_verified in the id_token and no userinfo fallback:
+	// the claim is missing, so the login must be rejected.
+	f.omitProfile = true
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body %s", rec.Code, rec.Body.String())
+	}
+	if got := errorCode(t, rec); got != model.ErrCodeEmailNotVerified {
+		t.Errorf("code = %q, want %q", got, model.ErrCodeEmailNotVerified)
+	}
+	if got := store.savedUsers(); got != 0 {
+		t.Errorf("saved users = %d, want 0", got)
+	}
+	if !noJWTCookie(rec.Result()) {
+		t.Error("unverified login must not set a jwt cookie")
+	}
+}
+
+func TestZitadelCallbackRejectsUserInfoUnverified(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	f.emailVerified = false
+	f.userInfoEmail = "pending@example.com"
+	f.userInfoVerified = false
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusForbidden || errorCode(t, rec) != model.ErrCodeEmailNotVerified {
+		t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
+	}
+	if got := store.savedUsers(); got != 0 {
+		t.Errorf("saved users = %d, want 0", got)
+	}
+}
+
+func TestZitadelCallbackUnverifiedBrowserRedirectsToLogin(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	f.emailVerified = false
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	target := "/auth/zitadel/callback?code=good-code&state=" + url.QueryEscape(login.query.Get("state"))
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.AddCookie(login.cookie)
+	rec := httptest.NewRecorder()
+	h.Callback(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "http://localhost:5173/login?error=email_not_verified" {
+		t.Errorf("redirect = %q", got)
+	}
+	if got := store.savedUsers(); got != 0 {
+		t.Errorf("saved users = %d, want 0", got)
+	}
+	if !noJWTCookie(rec.Result()) {
+		t.Error("unverified login must not set a jwt cookie")
 	}
 }
 
@@ -667,13 +757,17 @@ func TestZitadelProviders(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	var body struct {
-		Data map[string]bool `json:"data"`
+		Data map[string]any `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !body.Data["github"] || !body.Data["zitadel"] {
+	if body.Data["github"] != true || body.Data["zitadel"] != true {
 		t.Errorf("providers = %v", body.Data)
+	}
+	wantRegister := f.srv.URL + "/ui/v2/login/register"
+	if got := body.Data["zitadel_register_url"]; got != wantRegister {
+		t.Errorf("zitadel_register_url = %v, want %q", got, wantRegister)
 	}
 
 	disabled := NewZitadelHandler(testConfig())
@@ -683,8 +777,25 @@ func TestZitadelProviders(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !body.Data["github"] || body.Data["zitadel"] {
+	if body.Data["github"] != true || body.Data["zitadel"] != false {
 		t.Errorf("providers = %v", body.Data)
+	}
+	if _, ok := body.Data["zitadel_register_url"]; ok {
+		t.Errorf("disabled ZITADEL must not advertise a register URL: %v", body.Data)
+	}
+}
+
+func TestRegisterURLDefaultAndOverride(t *testing.T) {
+	cfg := &config.Config{ZitadelIssuer: "https://auth.example.com/"}
+	if got := cfg.RegisterURL(); got != "https://auth.example.com/ui/v2/login/register" {
+		t.Errorf("default register URL = %q", got)
+	}
+	cfg.ZitadelRegisterURL = "https://id.example.com/signup"
+	if got := cfg.RegisterURL(); got != "https://id.example.com/signup" {
+		t.Errorf("override register URL = %q", got)
+	}
+	if got := (&config.Config{}).RegisterURL(); got != "" {
+		t.Errorf("register URL without issuer = %q, want empty", got)
 	}
 }
 

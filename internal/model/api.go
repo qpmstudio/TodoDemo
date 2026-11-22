@@ -24,6 +24,8 @@ const (
 	ErrCodeOAuthCodeInvalid     = "OAUTH_CODE_INVALID"
 	ErrCodeOAuthIDTokenInvalid  = "OAUTH_ID_TOKEN_INVALID"
 	ErrCodeAccountEmailConflict = "ACCOUNT_EMAIL_CONFLICT"
+	ErrCodeEmailNotVerified     = "EMAIL_NOT_VERIFIED"
+	ErrCodeRegistrationMoved    = "REGISTRATION_MOVED"
 	ErrCodeZitadelNotConfigured = "ZITADEL_NOT_CONFIGURED"
 	ErrCodeUpstreamUnavailable  = "UPSTREAM_UNAVAILABLE"
 )
