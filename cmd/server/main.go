@@ -91,6 +91,11 @@ func main() {
 	r.Post("/auth/register", authHandler.Register)
 	r.Post("/auth/login", authHandler.Login)
 
+	// Public probe used by the deploy/QA pipeline to confirm the running build.
+	// It sits outside the /api/v1 route group on purpose: that group is where
+	// middleware.Auth is applied.
+	r.Get("/api/v1/probe", handler.Probe)
+
 	// Protected API routes
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(middleware.Auth(cfg))
