@@ -115,7 +115,13 @@ export function LoginPage() {
 
         {oauthError === 'email_not_verified' && (
           <div className="auth-form__error" role="alert">
-            Your email is not verified yet. Please complete the verification email, then sign in again.
+            <p>
+              Your email is not verified yet. We tried to send you a verification email —
+              check your inbox (and spam), verify the address, then sign in again.
+            </p>
+            {providers?.zitadel_verify_url && (
+              <a href={providers.zitadel_verify_url}>Verify your email in ZITADEL</a>
+            )}
           </div>
         )}
 

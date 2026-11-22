@@ -103,6 +103,18 @@ describe('LoginPage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Your email is not verified yet');
   });
 
+  it('links the unverified-email banner to the ZITADEL verify page', async () => {
+    vi.mocked(fetchAuthProviders).mockResolvedValueOnce({
+      github: true,
+      zitadel: true,
+      zitadel_verify_url: 'https://auth.example.com/ui/v2/login',
+    });
+    renderWithAuth(null, false, '/?error=email_not_verified');
+
+    const link = await screen.findByText('Verify your email in ZITADEL');
+    expect(link).toHaveAttribute('href', 'https://auth.example.com/ui/v2/login');
+  });
+
   it('shows loading spinner when loading', () => {
     renderWithAuth(null, true);
 

@@ -61,6 +61,7 @@ export interface AuthProviders {
   github: boolean;
   zitadel: boolean;
   zitadel_register_url?: string;
+  zitadel_verify_url?: string;
 }
 
 export async function fetchAuthProviders(): Promise<AuthProviders> {

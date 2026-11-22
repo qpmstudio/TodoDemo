@@ -81,20 +81,22 @@ type fakeZitadel struct {
 	badKey *rsa.PrivateKey
 	kid    string
 
-	mu             sync.Mutex
-	nonce          string
-	expiresIn      time.Duration
-	email          string
-	name           string
-	emailVerified  bool
-	omitProfile    bool
-	tokenStatus    int
-	wrongKey       bool
-	tokenCalls     int
+	mu               sync.Mutex
+	nonce            string
+	expiresIn        time.Duration
+	email            string
+	name             string
+	emailVerified    bool
+	omitProfile      bool
+	tokenStatus      int
+	wrongKey         bool
+	tokenCalls       int
 	userInfoEmail    string
 	userInfoName     string
 	userInfoVerified bool
 	userInfoCalled   int
+	resendStatus     int
+	resendCalled     int
 }
 
 func newFakeZitadel(t *testing.T) *fakeZitadel {
@@ -108,12 +110,12 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 		t.Fatalf("generate alternate key: %v", err)
 	}
 	f := &fakeZitadel{
-		key:           key,
-		badKey:        badKey,
-		kid:           "test-kid",
-		expiresIn:     5 * time.Minute,
-		email:         "zitadel@example.com",
-		name:          "ZITADEL User",
+		key:              key,
+		badKey:           badKey,
+		kid:              "test-kid",
+		expiresIn:        5 * time.Minute,
+		email:            "zitadel@example.com",
+		name:             "ZITADEL User",
 		emailVerified:    true,
 		userInfoVerified: true,
 	}
@@ -122,6 +124,7 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 	mux.HandleFunc("/oauth/v2/keys", f.handleJWKS)
 	mux.HandleFunc("/oauth/v2/token", f.handleToken)
 	mux.HandleFunc("/oidc/v1/userinfo", f.handleUserInfo)
+	mux.HandleFunc("/auth/v1/users/me/email/_resend_verification", f.handleResendVerification)
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -222,12 +225,39 @@ func (f *fakeZitadel) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (f *fakeZitadel) handleResendVerification(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resendCalled++
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Header.Get("Authorization") != "Bearer access-token" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if f.resendStatus != 0 && f.resendStatus != http.StatusOK {
+		w.WriteHeader(f.resendStatus)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{}`))
+}
+
+func (f *fakeZitadel) resendCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.resendCalled
+}
+
 func (f *fakeZitadel) setNonce(nonce string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.nonce = nonce
 }
 
+func (f *fakeZitadel) setResendStatus(status int)   { f.resendStatus = status }
 func (f *fakeZitadel) setTokenStatus(status int)    { f.tokenStatus = status }
 func (f *fakeZitadel) setExpiresIn(d time.Duration) { f.expiresIn = d }
 func (f *fakeZitadel) setWrongKey(wrong bool)       { f.wrongKey = wrong }
@@ -565,6 +595,23 @@ func noJWTCookie(res *http.Response) bool {
 	return true
 }
 
+// emailNotVerifiedPayload decodes the self-rescue fields of an
+// EMAIL_NOT_VERIFIED response.
+func emailNotVerifiedPayload(t *testing.T, rec *httptest.ResponseRecorder) (verifyURL string, resent *bool) {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Code                    string `json:"code"`
+			VerifyURL               string `json:"verify_url"`
+			VerificationEmailResent *bool  `json:"verification_email_resent"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error body %q: %v", rec.Body.String(), err)
+	}
+	return body.Error.VerifyURL, body.Error.VerificationEmailResent
+}
+
 func TestZitadelCallbackRejectsUnverifiedEmail(t *testing.T) {
 	f := newFakeZitadel(t)
 	h, store := newTestZitadelHandler(t, f)
@@ -588,6 +635,44 @@ func TestZitadelCallbackRejectsUnverifiedEmail(t *testing.T) {
 	}
 	if !noJWTCookie(rec.Result()) {
 		t.Error("unverified login must not set a jwt cookie")
+	}
+	verifyURL, resent := emailNotVerifiedPayload(t, rec)
+	if want := f.srv.URL + "/ui/v2/login"; verifyURL != want {
+		t.Errorf("verify_url = %q, want %q", verifyURL, want)
+	}
+	if resent == nil || !*resent {
+		t.Errorf("verification_email_resent = %v, want true", resent)
+	}
+	if got := f.resendCount(); got != 1 {
+		t.Errorf("resend calls = %d, want 1", got)
+	}
+}
+
+func TestZitadelCallbackResendFailureIsReported(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	f.emailVerified = false
+	f.setResendStatus(http.StatusInternalServerError)
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403, body %s", rec.Code, rec.Body.String())
+	}
+	verifyURL, resent := emailNotVerifiedPayload(t, rec)
+	if verifyURL == "" {
+		t.Error("verify_url must still be present when the resend fails")
+	}
+	if resent == nil || *resent {
+		t.Errorf("verification_email_resent = %v, want explicit false", resent)
+	}
+	if got := f.resendCount(); got != 1 {
+		t.Errorf("resend calls = %d, want 1", got)
+	}
+	if got := store.callCount(); got != 0 {
+		t.Errorf("upsert calls = %d, want 0", got)
 	}
 }
 
@@ -769,6 +854,10 @@ func TestZitadelProviders(t *testing.T) {
 	if got := body.Data["zitadel_register_url"]; got != wantRegister {
 		t.Errorf("zitadel_register_url = %v, want %q", got, wantRegister)
 	}
+	wantVerify := f.srv.URL + "/ui/v2/login"
+	if got := body.Data["zitadel_verify_url"]; got != wantVerify {
+		t.Errorf("zitadel_verify_url = %v, want %q", got, wantVerify)
+	}
 
 	disabled := NewZitadelHandler(testConfig())
 	rec = httptest.NewRecorder()
@@ -783,6 +872,9 @@ func TestZitadelProviders(t *testing.T) {
 	if _, ok := body.Data["zitadel_register_url"]; ok {
 		t.Errorf("disabled ZITADEL must not advertise a register URL: %v", body.Data)
 	}
+	if _, ok := body.Data["zitadel_verify_url"]; ok {
+		t.Errorf("disabled ZITADEL must not advertise a verify URL: %v", body.Data)
+	}
 }
 
 func TestRegisterURLDefaultAndOverride(t *testing.T) {
@@ -796,6 +888,20 @@ func TestRegisterURLDefaultAndOverride(t *testing.T) {
 	}
 	if got := (&config.Config{}).RegisterURL(); got != "" {
 		t.Errorf("register URL without issuer = %q, want empty", got)
+	}
+}
+
+func TestVerifyURLDefaultAndOverride(t *testing.T) {
+	cfg := &config.Config{ZitadelIssuer: "https://auth.example.com/"}
+	if got := cfg.VerifyURL(); got != "https://auth.example.com/ui/v2/login" {
+		t.Errorf("default verify URL = %q", got)
+	}
+	cfg.ZitadelVerifyURL = "https://id.example.com/verify"
+	if got := cfg.VerifyURL(); got != "https://id.example.com/verify" {
+		t.Errorf("override verify URL = %q", got)
+	}
+	if got := (&config.Config{}).VerifyURL(); got != "" {
+		t.Errorf("verify URL without issuer = %q, want empty", got)
 	}
 }
 

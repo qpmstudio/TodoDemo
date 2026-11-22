@@ -28,6 +28,7 @@ type Config struct {
 	ZitadelRedirectURL   string
 	ZitadelPostLogoutURL string
 	ZitadelRegisterURL   string
+	ZitadelVerifyURL     string
 }
 
 // ZitadelEnabled reports whether ZITADEL login has enough configuration to
@@ -49,6 +50,19 @@ func (c *Config) RegisterURL() string {
 	return strings.TrimRight(c.ZitadelIssuer, "/") + "/ui/v2/login/register"
 }
 
+// VerifyURL is where a signed-in user finishes email verification in ZITADEL.
+// It defaults to the hosted login entry, which is safe to open without the
+// one-time code from the verification mail.
+func (c *Config) VerifyURL() string {
+	if c.ZitadelVerifyURL != "" {
+		return c.ZitadelVerifyURL
+	}
+	if c.ZitadelIssuer == "" {
+		return ""
+	}
+	return strings.TrimRight(c.ZitadelIssuer, "/") + "/ui/v2/login"
+}
+
 // Load reads configuration from environment variables.
 func Load() (*Config, error) {
 	cfg := &Config{
@@ -67,6 +81,7 @@ func Load() (*Config, error) {
 		ZitadelRedirectURL:   getEnv("ZITADEL_REDIRECT_URL", "http://localhost:8080/auth/zitadel/callback"),
 		ZitadelPostLogoutURL: os.Getenv("ZITADEL_POST_LOGOUT_URL"),
 		ZitadelRegisterURL:   os.Getenv("ZITADEL_REGISTER_URL"),
+		ZitadelVerifyURL:     os.Getenv("ZITADEL_VERIFY_URL"),
 	}
 
 	// Validate required config

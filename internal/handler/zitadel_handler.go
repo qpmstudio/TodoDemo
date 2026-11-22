@@ -47,6 +47,7 @@ type oidcClient interface {
 	Exchange(ctx context.Context, code, codeVerifier string) (*zitadel.Token, error)
 	VerifyIDToken(ctx context.Context, rawToken, expectedNonce string) (*zitadel.Claims, error)
 	UserInfo(ctx context.Context, accessToken string) (*zitadel.Claims, error)
+	ResendEmailVerification(ctx context.Context, accessToken string) error
 	EndSessionURL(idTokenHint, postLogoutRedirect string) string
 }
 
@@ -215,14 +216,36 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	// Second gate: even when ZITADEL's login page lets an unverified account
 	// through, TodoDemo must not create a session or a local user for it.
 	if !verified || email == "" {
-		logging.FromContext(r.Context()).WarnContext(r.Context(),
-			"zitadel login rejected: email is not verified", "sub", claims.Subject)
+		logger := logging.FromContext(r.Context())
+		// Rejecting alone would strand accounts that predate email
+		// verification (some are ACTIVE yet unverified), so the rejection
+		// carries a verify link and we ask ZITADEL to send a fresh mail using
+		// the user's own access token. A resend failure is reported, never
+		// hidden, but it never turns into a login.
+		resent := false
+		if token.AccessToken == "" {
+			logger.WarnContext(r.Context(),
+				"cannot resend verification email: no access token", "sub", claims.Subject)
+		} else if err := h.oidc.ResendEmailVerification(r.Context(), token.AccessToken); err != nil {
+			logger.WarnContext(r.Context(),
+				"resend verification email failed", "sub", claims.Subject, "error", err)
+		} else {
+			resent = true
+		}
+		logger.WarnContext(r.Context(),
+			"zitadel login rejected: email is not verified",
+			"sub", claims.Subject, "verification_email_resent", resent)
+
 		if wantsHTML(r) {
 			http.Redirect(w, r, h.cfg.FrontendURL+"/login?error=email_not_verified", http.StatusFound)
 			return
 		}
-		writeError(w, r, http.StatusForbidden, model.ErrCodeEmailNotVerified,
-			"Email is not verified; complete the verification email from ZITADEL before signing in", nil)
+		writeAPIError(w, r, http.StatusForbidden, &model.APIError{
+			Code:                    model.ErrCodeEmailNotVerified,
+			Message:                 "Email is not verified; open the verification link from ZITADEL and sign in again",
+			VerifyURL:               h.cfg.VerifyURL(),
+			VerificationEmailResent: &resent,
+		}, nil)
 		return
 	}
 
@@ -289,6 +312,7 @@ func (h *ZitadelHandler) Providers(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.cfg.ZitadelEnabled() {
 		providers["zitadel_register_url"] = h.cfg.RegisterURL()
+		providers["zitadel_verify_url"] = h.cfg.VerifyURL()
 	}
 	writeJSON(w, http.StatusOK, providers)
 }
