@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -14,14 +15,53 @@ import (
 	"github.com/DevenWen/TodoDemo/internal/repository"
 )
 
-// TodoHandler handles todo CRUD endpoints.
-type TodoHandler struct {
-	cfg *config.Config
+const (
+	defaultPerPage = 20
+	maxPerPage     = 100
+)
+
+// TodoStore is the subset of repository operations the todo handler needs.
+// It keeps the handler testable without a live database.
+type TodoStore interface {
+	List(ctx context.Context, filter repository.TodoFilter) ([]model.Todo, int, error)
+	Create(ctx context.Context, userID string, req model.CreateTodoRequest) (*model.Todo, error)
+	Update(ctx context.Context, id, userID string, req model.UpdateTodoRequest) (*model.Todo, error)
+	Delete(ctx context.Context, id, userID string) error
 }
 
-// NewTodoHandler creates a new TodoHandler.
+// repositoryTodoStore implements TodoStore with the package-level repository.
+type repositoryTodoStore struct{}
+
+func (repositoryTodoStore) List(ctx context.Context, filter repository.TodoFilter) ([]model.Todo, int, error) {
+	return repository.ListTodos(ctx, filter)
+}
+
+func (repositoryTodoStore) Create(ctx context.Context, userID string, req model.CreateTodoRequest) (*model.Todo, error) {
+	return repository.CreateTodo(ctx, userID, req)
+}
+
+func (repositoryTodoStore) Update(ctx context.Context, id, userID string, req model.UpdateTodoRequest) (*model.Todo, error) {
+	return repository.UpdateTodo(ctx, id, userID, req)
+}
+
+func (repositoryTodoStore) Delete(ctx context.Context, id, userID string) error {
+	return repository.SoftDeleteTodo(ctx, id, userID)
+}
+
+// TodoHandler handles todo CRUD endpoints.
+type TodoHandler struct {
+	cfg   *config.Config
+	store TodoStore
+}
+
+// NewTodoHandler creates a new TodoHandler backed by the database.
 func NewTodoHandler(cfg *config.Config) *TodoHandler {
-	return &TodoHandler{cfg: cfg}
+	return newTodoHandlerWithStore(cfg, repositoryTodoStore{})
+}
+
+// newTodoHandlerWithStore lets tests inject a fake store.
+func newTodoHandlerWithStore(cfg *config.Config, store TodoStore) *TodoHandler {
+	return &TodoHandler{cfg: cfg, store: store}
 }
 
 // List returns a paginated list of todos for the authenticated user.
@@ -31,7 +71,7 @@ func (h *TodoHandler) List(w http.ResponseWriter, r *http.Request) {
 	filter := repository.TodoFilter{
 		UserID:  userID,
 		Page:    queryInt(r, "page", 1),
-		PerPage: queryInt(r, "per_page", 20),
+		PerPage: normalizePerPage(queryInt(r, "per_page", defaultPerPage)),
 	}
 
 	// Parse completed filter
@@ -44,7 +84,7 @@ func (h *TodoHandler) List(w http.ResponseWriter, r *http.Request) {
 		filter.Completed = &f
 	}
 
-	todos, total, err := repository.ListTodos(r.Context(), filter)
+	todos, total, err := h.store.List(r.Context(), filter)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to fetch todos", err)
 		return
@@ -78,7 +118,7 @@ func (h *TodoHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	todo, err := repository.CreateTodo(r.Context(), userID, req)
+	todo, err := h.store.Create(r.Context(), userID, req)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create todo", err)
 		return
@@ -112,7 +152,7 @@ func (h *TodoHandler) Update(w http.ResponseWriter, r *http.Request) {
 		req.Title = &trimmed
 	}
 
-	todo, err := repository.UpdateTodo(r.Context(), todoID, userID, req)
+	todo, err := h.store.Update(r.Context(), todoID, userID, req)
 	if err != nil {
 		if repository.IsNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "Todo not found", err)
@@ -130,7 +170,7 @@ func (h *TodoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	userID, _ := middleware.GetUserID(r.Context())
 	todoID := chi.URLParam(r, "id")
 
-	err := repository.SoftDeleteTodo(r.Context(), todoID, userID)
+	err := h.store.Delete(r.Context(), todoID, userID)
 	if err != nil {
 		if repository.IsNotFoundError(err) {
 			writeError(w, r, http.StatusNotFound, model.ErrCodeNotFound, "Todo not found", err)
@@ -153,6 +193,17 @@ func writeListResponse(w http.ResponseWriter, status int, data interface{}, meta
 		"meta":  meta,
 		"error": nil,
 	})
+}
+
+// normalizePerPage clamps a requested page size to the API contract.
+func normalizePerPage(n int) int {
+	if n < 1 {
+		return defaultPerPage
+	}
+	if n > maxPerPage {
+		return maxPerPage
+	}
+	return n
 }
 
 // queryInt parses an integer query parameter with a default fallback.
