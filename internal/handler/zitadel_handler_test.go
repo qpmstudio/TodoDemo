@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -29,6 +30,12 @@ type fakeZitadelStore struct {
 	users map[string]*model.User
 	calls int
 	err   error
+
+	claimUser  *model.User
+	claimErr   error
+	claimCalls int
+	claimSub   string
+	claimEmail string
 }
 
 func newFakeZitadelStore() *fakeZitadelStore {
@@ -59,6 +66,18 @@ func (f *fakeZitadelStore) UpsertUserByZitadelSub(ctx context.Context, sub, emai
 	}
 	f.users[sub] = user
 	return user, nil
+}
+
+func (f *fakeZitadelStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email string) (*model.User, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.claimCalls++
+	f.claimSub = sub
+	f.claimEmail = email
+	if f.claimErr != nil {
+		return nil, f.claimErr
+	}
+	return f.claimUser, nil
 }
 
 func (f *fakeZitadelStore) savedUsers() int {
@@ -558,6 +577,55 @@ func TestZitadelCallbackEmailConflict(t *testing.T) {
 	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
 	if rec.Code != http.StatusConflict || errorCode(t, rec) != model.ErrCodeAccountEmailConflict {
 		t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
+	}
+}
+
+func TestZitadelCallbackAdoptsUnlinkedLocalAccount(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	// Simulate a local password account that already owns this email: the
+	// upsert conflicts because TodoDemo does not merge accounts by email.
+	store.err = repository.ErrEmailConflict
+	store.claimUser = &model.User{
+		ID:           "local-adopted-1",
+		Email:        "zitadel@example.com",
+		DisplayName:  "Old Account",
+		AuthProvider: "zitadel",
+	}
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if store.claimCalls != 1 {
+		t.Fatalf("claim calls = %d, want 1", store.claimCalls)
+	}
+	if store.claimSub != "zitadel-sub-1" || store.claimEmail != "zitadel@example.com" {
+		t.Errorf("claim args = (%q, %q)", store.claimSub, store.claimEmail)
+	}
+	if noJWTCookie(rec.Result()) {
+		t.Error("adopted account should receive a session cookie")
+	}
+}
+
+func TestZitadelCallbackClaimErrorIsInternal(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, store := newTestZitadelHandler(t, f)
+	store.err = repository.ErrEmailConflict
+	store.claimErr = errors.New("db down")
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusInternalServerError || errorCode(t, rec) != model.ErrCodeInternalError {
+		t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
+	}
+	if !noJWTCookie(rec.Result()) {
+		t.Error("failed account linking must not set a jwt cookie")
 	}
 }
 

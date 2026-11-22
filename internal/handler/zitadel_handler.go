@@ -33,12 +33,17 @@ const (
 // a fake; production uses repositoryUserStore.
 type zitadelUserStore interface {
 	UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string) (*model.User, error)
+	ClaimUnlinkedUserByEmail(ctx context.Context, sub, email string) (*model.User, error)
 }
 
 type repositoryUserStore struct{}
 
 func (repositoryUserStore) UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string) (*model.User, error) {
 	return repository.UpsertUserByZitadelSub(ctx, sub, email, displayName)
+}
+
+func (repositoryUserStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email string) (*model.User, error) {
+	return repository.ClaimUnlinkedUserByEmail(ctx, sub, email)
 }
 
 // oidcClient is the protocol surface used by the handler.
@@ -260,12 +265,29 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	user, err := h.store.UpsertUserByZitadelSub(r.Context(), claims.Subject, email, zitadelDisplayName(name, username, email))
 	if err != nil {
 		if errors.Is(err, repository.ErrEmailConflict) {
-			writeError(w, r, http.StatusConflict, model.ErrCodeAccountEmailConflict,
-				"This email already belongs to another account; sign in with that method instead", err)
+			// Local accounts created before ZITADEL owned registration keep
+			// their email. Now that ZITADEL verified that same address, adopt
+			// the row (and its todos) instead of rejecting the login; only
+			// an email that already belongs to another ZITADEL subject is a
+			// real conflict.
+			claimed, claimErr := h.store.ClaimUnlinkedUserByEmail(r.Context(), claims.Subject, email)
+			if claimErr != nil {
+				writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError,
+					"Failed to link user account", claimErr)
+				return
+			}
+			if claimed == nil {
+				writeError(w, r, http.StatusConflict, model.ErrCodeAccountEmailConflict,
+					"This email already belongs to another account; sign in with that method instead", err)
+				return
+			}
+			logging.FromContext(r.Context()).InfoContext(r.Context(),
+				"zitadel login adopted an unlinked local account", "user_id", claimed.ID)
+			user = claimed
+		} else {
+			writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to save user", err)
 			return
 		}
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to save user", err)
-		return
 	}
 
 	jwtToken, err := createJWT(h.cfg, user)

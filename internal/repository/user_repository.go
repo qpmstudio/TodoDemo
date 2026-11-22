@@ -7,6 +7,7 @@ import (
 
 	"github.com/DevenWen/TodoDemo/internal/database"
 	"github.com/DevenWen/TodoDemo/internal/model"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -71,6 +72,40 @@ func UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string)
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_users_email" {
 			return nil, ErrEmailConflict
 		}
+		return nil, err
+	}
+	return user, nil
+}
+
+// ClaimUnlinkedUserByEmail attaches a ZITADEL subject to a local account that
+// was created before ZITADEL became the only way in. The caller only reaches
+// this path after ZITADEL proved the user owns the email, so the verified claim
+// is a safe ownership proof; the local row is adopted instead of duplicated,
+// which keeps the user's todos. It returns (nil, nil) when no unlinked row has
+// that email, so the caller can report a real conflict.
+func ClaimUnlinkedUserByEmail(ctx context.Context, sub, email string) (*model.User, error) {
+	if email == "" {
+		return nil, nil
+	}
+	now := time.Now()
+	user := &model.User{}
+	err := database.Pool.QueryRow(ctx,
+		`UPDATE users
+		    SET zitadel_sub = $1, auth_provider = 'zitadel', updated_at = $2
+		  WHERE id = (
+		        SELECT id FROM users
+		         WHERE lower(email) = lower($3) AND zitadel_sub IS NULL
+		         ORDER BY (password_hash IS NULL), created_at
+		         LIMIT 1)
+		  RETURNING id, zitadel_sub, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(auth_provider, ''), created_at, updated_at`,
+		sub,
+		now,
+		email,
+	).Scan(&user.ID, &user.ZitadelSub, &user.Email, &user.DisplayName, &user.AuthProvider, &user.CreatedAt, &user.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
 	return user, nil
