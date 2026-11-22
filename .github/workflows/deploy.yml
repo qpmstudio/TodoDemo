@@ -52,12 +52,11 @@ jobs:
           if slot not in cfg:
               sys.exit(f".flow/deploy.json 里没有槽位 {slot}")
           for key in ("url", "namespace", "deployment", "image_repo"):
-              print(f"{key.upper()}={cfg[slot].get(key, '')}")
+              val = cfg[slot].get(key)
+              if not val:
+                  sys.exit(f".flow/deploy.json 缺 {key}（槽位 {slot}）")
+              print(f"{key.upper()}={val}")
           PY
-          : "${URL:?deploy.json 缺 url}"
-          : "${NAMESPACE:?deploy.json 缺 namespace}"
-          : "${DEPLOYMENT:?deploy.json 缺 deployment}"
-          : "${IMAGE_REPO:?deploy.json 缺 image_repo}"
 
       - name: build（kaniko Job 推私有仓库）
         run: |
