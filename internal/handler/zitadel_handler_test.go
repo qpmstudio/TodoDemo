@@ -738,14 +738,41 @@ func TestZitadelCallbackUnverifiedBrowserRedirectsToLogin(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Fatalf("status = %d, want 302, body %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("Location"); got != "http://localhost:5173/login?error=email_not_verified" {
+	if got := rec.Header().Get("Location"); got != "http://localhost:5173/login?error=email_not_verified&resent=1" {
 		t.Errorf("redirect = %q", got)
+	}
+	if got := f.resendCount(); got != 1 {
+		t.Errorf("resend calls = %d, want 1", got)
 	}
 	if got := store.savedUsers(); got != 0 {
 		t.Errorf("saved users = %d, want 0", got)
 	}
 	if !noJWTCookie(rec.Result()) {
 		t.Error("unverified login must not set a jwt cookie")
+	}
+}
+
+func TestZitadelCallbackUnverifiedBrowserResendFailure(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, _ := newTestZitadelHandler(t, f)
+	f.emailVerified = false
+	f.setResendStatus(http.StatusInternalServerError)
+
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+
+	target := "/auth/zitadel/callback?code=good-code&state=" + url.QueryEscape(login.query.Get("state"))
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.AddCookie(login.cookie)
+	rec := httptest.NewRecorder()
+	h.Callback(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302, body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "http://localhost:5173/login?error=email_not_verified&resent=0" {
+		t.Errorf("redirect = %q", got)
 	}
 }
 
@@ -874,34 +901,6 @@ func TestZitadelProviders(t *testing.T) {
 	}
 	if _, ok := body.Data["zitadel_verify_url"]; ok {
 		t.Errorf("disabled ZITADEL must not advertise a verify URL: %v", body.Data)
-	}
-}
-
-func TestRegisterURLDefaultAndOverride(t *testing.T) {
-	cfg := &config.Config{ZitadelIssuer: "https://auth.example.com/"}
-	if got := cfg.RegisterURL(); got != "https://auth.example.com/ui/v2/login/register" {
-		t.Errorf("default register URL = %q", got)
-	}
-	cfg.ZitadelRegisterURL = "https://id.example.com/signup"
-	if got := cfg.RegisterURL(); got != "https://id.example.com/signup" {
-		t.Errorf("override register URL = %q", got)
-	}
-	if got := (&config.Config{}).RegisterURL(); got != "" {
-		t.Errorf("register URL without issuer = %q, want empty", got)
-	}
-}
-
-func TestVerifyURLDefaultAndOverride(t *testing.T) {
-	cfg := &config.Config{ZitadelIssuer: "https://auth.example.com/"}
-	if got := cfg.VerifyURL(); got != "https://auth.example.com/ui/v2/login" {
-		t.Errorf("default verify URL = %q", got)
-	}
-	cfg.ZitadelVerifyURL = "https://id.example.com/verify"
-	if got := cfg.VerifyURL(); got != "https://id.example.com/verify" {
-		t.Errorf("override verify URL = %q", got)
-	}
-	if got := (&config.Config{}).VerifyURL(); got != "" {
-		t.Errorf("verify URL without issuer = %q, want empty", got)
 	}
 }
 

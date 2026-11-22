@@ -68,6 +68,7 @@ export function LoginPage() {
   const [providers, setProviders] = useState<AuthProviders | null>(null);
   const [searchParams] = useSearchParams();
   const oauthError = searchParams.get('error');
+  const verificationResent = searchParams.get('resent');
 
   useEffect(() => {
     let cancelled = false;
@@ -116,8 +117,14 @@ export function LoginPage() {
         {oauthError === 'email_not_verified' && (
           <div className="auth-form__error" role="alert">
             <p>
-              Your email is not verified yet. We tried to send you a verification email —
-              check your inbox (and spam), verify the address, then sign in again.
+              {verificationResent === '1'
+                ? 'Your email is not verified yet. We sent a new verification email — ' +
+                  'check your inbox (and spam), verify the address, then sign in again.'
+                : verificationResent === '0'
+                  ? 'Your email is not verified yet and we could not send a new verification ' +
+                    'email automatically. Request one from ZITADEL below, then sign in again.'
+                  : 'Your email is not verified yet. Please complete the verification email, ' +
+                    'then sign in again.'}
             </p>
             {providers?.zitadel_verify_url && (
               <a href={providers.zitadel_verify_url}>Verify your email in ZITADEL</a>

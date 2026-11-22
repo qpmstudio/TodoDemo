@@ -237,7 +237,15 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 			"sub", claims.Subject, "verification_email_resent", resent)
 
 		if wantsHTML(r) {
-			http.Redirect(w, r, h.cfg.FrontendURL+"/login?error=email_not_verified", http.StatusFound)
+			// Carry the resend outcome so the login page can tell the user
+			// whether to expect a new mail or to open ZITADEL themselves.
+			target := h.cfg.FrontendURL + "/login?error=email_not_verified"
+			if resent {
+				target += "&resent=1"
+			} else {
+				target += "&resent=0"
+			}
+			http.Redirect(w, r, target, http.StatusFound)
 			return
 		}
 		writeAPIError(w, r, http.StatusForbidden, &model.APIError{

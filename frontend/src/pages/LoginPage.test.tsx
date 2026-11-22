@@ -103,6 +103,18 @@ describe('LoginPage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Your email is not verified yet');
   });
 
+  it('tells the user a new verification email was sent', () => {
+    renderWithAuth(null, false, '/?error=email_not_verified&resent=1');
+
+    expect(screen.getByRole('alert')).toHaveTextContent('We sent a new verification email');
+  });
+
+  it('tells the user when the resend failed', () => {
+    renderWithAuth(null, false, '/?error=email_not_verified&resent=0');
+
+    expect(screen.getByRole('alert')).toHaveTextContent('we could not send a new verification email');
+  });
+
   it('links the unverified-email banner to the ZITADEL verify page', async () => {
     vi.mocked(fetchAuthProviders).mockResolvedValueOnce({
       github: true,

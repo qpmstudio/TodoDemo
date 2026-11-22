@@ -207,3 +207,31 @@ func TestWarnDeploymentConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestRegisterURLDefaultAndOverride(t *testing.T) {
+	cfg := &Config{ZitadelIssuer: "https://auth.example.com/"}
+	if got := cfg.RegisterURL(); got != "https://auth.example.com/ui/v2/login/register" {
+		t.Errorf("default register URL = %q", got)
+	}
+	cfg.ZitadelRegisterURL = "https://id.example.com/signup"
+	if got := cfg.RegisterURL(); got != "https://id.example.com/signup" {
+		t.Errorf("override register URL = %q", got)
+	}
+	if got := (&Config{}).RegisterURL(); got != "" {
+		t.Errorf("register URL without issuer = %q, want empty", got)
+	}
+}
+
+func TestVerifyURLDefaultAndOverride(t *testing.T) {
+	cfg := &Config{ZitadelIssuer: "https://auth.example.com/"}
+	if got := cfg.VerifyURL(); got != "https://auth.example.com/ui/v2/login" {
+		t.Errorf("default verify URL = %q", got)
+	}
+	cfg.ZitadelVerifyURL = "https://id.example.com/verify"
+	if got := cfg.VerifyURL(); got != "https://id.example.com/verify" {
+		t.Errorf("override verify URL = %q", got)
+	}
+	if got := (&Config{}).VerifyURL(); got != "" {
+		t.Errorf("verify URL without issuer = %q, want empty", got)
+	}
+}
