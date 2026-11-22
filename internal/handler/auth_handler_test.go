@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -54,16 +56,97 @@ func TestGitHubLogin(t *testing.T) {
 		t.Error("state cookie should be HttpOnly")
 	}
 
-	// Verify redirect URL contains client ID
+	// Verify the redirect points at GitHub with the configured OAuth parameters.
 	location := resp.Header.Get("Location")
 	if location == "" {
-		t.Error("expected Location header")
+		t.Fatal("expected Location header")
 	}
-	if !contains(location, "github.com/login/oauth/authorize") {
-		t.Error("redirect should go to GitHub authorize")
+	authURL, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("Location is not a valid URL: %v", err)
 	}
-	if !contains(location, "client_id=test-client-id") {
-		t.Error("redirect should include client_id")
+	if authURL.Scheme != "https" || authURL.Host != "github.com" || authURL.Path != "/login/oauth/authorize" {
+		t.Errorf("redirect should go to GitHub authorize, got %s", location)
+	}
+	query := authURL.Query()
+	if got := query.Get("client_id"); got != cfg.GitHubClientID {
+		t.Errorf("expected client_id %q, got %q", cfg.GitHubClientID, got)
+	}
+	if got := query.Get("redirect_uri"); got != cfg.GitHubRedirectURL {
+		t.Errorf("expected redirect_uri %q, got %q", cfg.GitHubRedirectURL, got)
+	}
+	if got := query.Get("scope"); got != "read:user" {
+		t.Errorf("expected scope read:user, got %q", got)
+	}
+	if query.Get("state") == "" {
+		t.Error("expected non-empty state in redirect")
+	}
+}
+
+func TestGitHubLogin_Returns503WhenOAuthNotConfigured(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{"missing client id", func(c *config.Config) { c.GitHubClientID = "" }},
+		{"missing client secret", func(c *config.Config) { c.GitHubClientSecret = "" }},
+		{"missing both", func(c *config.Config) {
+			c.GitHubClientID = ""
+			c.GitHubClientSecret = ""
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			tt.mutate(cfg)
+			h := NewAuthHandler(cfg)
+
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			req := httptest.NewRequest("GET", "/auth/github/login", nil)
+			req = req.WithContext(logging.WithLogger(req.Context(), logger))
+			rec := httptest.NewRecorder()
+
+			h.GitHubLogin(rec, req)
+
+			resp := rec.Result()
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Errorf("expected 503, got %d", resp.StatusCode)
+			}
+			if location := resp.Header.Get("Location"); location != "" {
+				t.Errorf("must not redirect to GitHub, got Location: %s", location)
+			}
+			for _, cookie := range resp.Cookies() {
+				if cookie.Name == "oauth_state" {
+					t.Error("must not set oauth_state cookie when OAuth is not configured")
+				}
+			}
+
+			var apiResp model.APIResponse
+			if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if apiResp.Error == nil {
+				t.Fatal("expected an error response")
+			}
+			if apiResp.Error.Code != model.ErrCodeServiceUnavailable {
+				t.Errorf("expected %s, got %s", model.ErrCodeServiceUnavailable, apiResp.Error.Code)
+			}
+			if !strings.Contains(apiResp.Error.Message, "not configured") {
+				t.Errorf("expected a clear configuration message, got %q", apiResp.Error.Message)
+			}
+
+			logged := logs.String()
+			if !strings.Contains(logged, `"level":"WARN"`) {
+				t.Errorf("expected a warn log, got %q", logged)
+			}
+			if !strings.Contains(logged, "OAuth app not configured") {
+				t.Errorf("expected the warn log to explain the missing config, got %q", logged)
+			}
+		})
 	}
 }
 
