@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/DevenWen/TodoDemo/internal/config"
+	"github.com/DevenWen/TodoDemo/internal/logging"
 	"github.com/DevenWen/TodoDemo/internal/middleware"
 	"github.com/DevenWen/TodoDemo/internal/model"
 	"github.com/DevenWen/TodoDemo/internal/repository"
@@ -34,6 +35,20 @@ func NewAuthHandler(cfg *config.Config) *AuthHandler {
 
 // GitHubLogin redirects the user to GitHub for OAuth authorization.
 func (h *AuthHandler) GitHubLogin(w http.ResponseWriter, r *http.Request) {
+	// Without an OAuth app there is nothing to authorize against. Redirecting
+	// with an empty client_id sends the browser to a GitHub 404, so fail fast
+	// with an actionable error instead.
+	if h.cfg.GitHubClientID == "" || h.cfg.GitHubClientSecret == "" {
+		logging.FromContext(r.Context()).WarnContext(r.Context(),
+			"github oauth login rejected: OAuth app not configured",
+			"client_id_set", h.cfg.GitHubClientID != "",
+			"client_secret_set", h.cfg.GitHubClientSecret != "",
+		)
+		writeError(w, r, http.StatusServiceUnavailable, model.ErrCodeServiceUnavailable,
+			"GitHub login is not configured", nil)
+		return
+	}
+
 	state, err := generateRandomState()
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to generate state", err)
@@ -49,12 +64,13 @@ func (h *AuthHandler) GitHubLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   300, // 5 minutes
 	})
 
-	authURL := fmt.Sprintf(
-		"https://github.com/login/oauth/authorize?client_id=%s&redirect_uri=%s&scope=read:user&state=%s",
-		h.cfg.GitHubClientID,
-		url.QueryEscape(h.cfg.GitHubRedirectURL),
-		state,
-	)
+	query := url.Values{
+		"client_id":    {h.cfg.GitHubClientID},
+		"redirect_uri": {h.cfg.GitHubRedirectURL},
+		"scope":        {"read:user"},
+		"state":        {state},
+	}
+	authURL := "https://github.com/login/oauth/authorize?" + query.Encode()
 
 	http.Redirect(w, r, authURL, http.StatusFound)
 }

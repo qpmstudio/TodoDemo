@@ -42,6 +42,9 @@ func main() {
 	slog.SetDefault(logger)
 	database.SetLogger(logger)
 
+	// Surface deployment misconfiguration at boot without blocking local dev.
+	cfg.WarnDeploymentConfig(logger)
+
 	logger.Debug("configuration loaded", "log_level", cfg.LogLevel, "port", cfg.Port)
 
 	// Connect to database
