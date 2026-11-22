@@ -30,3 +30,13 @@ jobs:
           node-version: "24"
       - name: frontend
         run: bash .flow/check.sh frontend
+  # 手动追加（不随 .flow/ci.json 生成）：只在 PR 里报红，不进 required checks。
+  diff-hygiene:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: diff hygiene
+        run: bash .flow/check-diff-hygiene.sh
