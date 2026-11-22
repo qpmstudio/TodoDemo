@@ -86,13 +86,21 @@ func main() {
 
 	// Create handlers
 	authHandler := handler.NewAuthHandler(cfg)
+	zitadelHandler := handler.NewZitadelHandler(cfg)
 	todoHandler := handler.NewTodoHandler(cfg)
 
 	// Auth routes (public)
 	r.Get("/auth/github/login", authHandler.GitHubLogin)
 	r.Get("/auth/github/callback", authHandler.GitHubCallback)
+	r.Get("/auth/zitadel/login", zitadelHandler.Login)
+	r.Get("/auth/zitadel/callback", zitadelHandler.Callback)
+	r.Get("/auth/zitadel/logout", zitadelHandler.Logout)
 	r.Post("/auth/register", authHandler.Register)
 	r.Post("/auth/login", authHandler.Login)
+
+	// Which login buttons exist is public information; it never contains client
+	// IDs or secrets. It sits outside the protected group for that reason.
+	r.Get("/api/v1/auth/providers", zitadelHandler.Providers)
 
 	// Public probe used by the deploy/QA pipeline to confirm the running build.
 	// It sits outside the /api/v1 route group on purpose: that group is where
