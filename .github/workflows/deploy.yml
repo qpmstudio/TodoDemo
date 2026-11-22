@@ -74,6 +74,13 @@ jobs:
           # （emptyDir）上，而且构建要放在独立 Job 里，不能碰 runner 自己的文件系统。
           kubectl -n "$BUILD_NS" delete job "$KANIKO_JOB" --ignore-not-found
 
+          # 这台 runner 出网必须走 HTTP(S)_PROXY；把它转成 kaniko 的 build-arg，
+          # 否则 Dockerfile 里的 apk/npm/go 在 chroot 内直连会挂死（实测 900s DeadlineExceeded）。
+          KANIKO_PROXY_ARGS=""
+          [ -n "${HTTP_PROXY:-}" ]  && KANIKO_PROXY_ARGS="$KANIKO_PROXY_ARGS --build-arg=HTTP_PROXY=${HTTP_PROXY}"
+          [ -n "${HTTPS_PROXY:-}" ] && KANIKO_PROXY_ARGS="$KANIKO_PROXY_ARGS --build-arg=HTTPS_PROXY=${HTTPS_PROXY}"
+          [ -n "${NO_PROXY:-}" ]    && KANIKO_PROXY_ARGS="$KANIKO_PROXY_ARGS --build-arg=NO_PROXY=${NO_PROXY}"
+
           cat > /tmp/kaniko-job.yaml <<EOF
           apiVersion: batch/v1
           kind: Job
@@ -104,6 +111,10 @@ jobs:
                         # proxy.golang.org 在本网络 TLS1.3 失败，换 goproxy.cn。
                         sed -i '/^FROM registry-1.docker.io\/library\/golang:/a ENV GOPROXY=https://goproxy.cn' Dockerfile
                         grep -nE '^FROM|GOPROXY' Dockerfile
+                    env:
+                      - {name: HTTP_PROXY, value: "${HTTP_PROXY:-}"}
+                      - {name: HTTPS_PROXY, value: "${HTTPS_PROXY:-}"}
+                      - {name: NO_PROXY, value: "${NO_PROXY:-}"}
                     volumeMounts:
                       - {name: workspace, mountPath: /workspace}
                 containers:
@@ -119,15 +130,23 @@ jobs:
                           --dockerfile=/workspace/src/Dockerfile \
                           --destination=${IMAGE} \
                           --insecure-registry=${REGISTRY} \
-                          --cache=false --force --verbosity=info
+                          --cache=false --force --verbosity=info \
+                          ${KANIKO_PROXY_ARGS}
+                    env:
+                      - {name: HTTP_PROXY, value: "${HTTP_PROXY:-}"}
+                      - {name: HTTPS_PROXY, value: "${HTTPS_PROXY:-}"}
+                      - {name: NO_PROXY, value: "${NO_PROXY:-}"}
                     resources:
                       limits: {cpu: "2", memory: 4Gi}
                       requests: {cpu: 500m, memory: 512Mi}
                     volumeMounts:
                       - {name: workspace, mountPath: /workspace}
+                      - {name: kaniko-dir, mountPath: /kaniko}
                 volumes:
                   - name: workspace
                     emptyDir: {}
+                  - name: kaniko-dir
+                    emptyDir: {sizeLimit: 12Gi}
           EOF
 
           kubectl apply -f /tmp/kaniko-job.yaml
