@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/mail"
 	"net/url"
 	"strings"
 	"time"
@@ -156,56 +155,15 @@ type authRequest struct {
 }
 
 // Register handles email + password registration.
+// Register is retired: account creation and email verification now happen in
+// ZITADEL. The route stays registered so old clients get an explicit answer
+// instead of a confusing 404, but it never creates a local user.
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
-	var req authRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, r, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Invalid request body", err)
-		return
+	message := "Self-service registration is disabled; create your account with ZITADEL"
+	if registerURL := h.cfg.RegisterURL(); registerURL != "" {
+		message = "Self-service registration is disabled; create your account at " + registerURL
 	}
-
-	// Validate email
-	if _, err := mail.ParseAddress(req.Email); err != nil || !strings.Contains(req.Email, "@") {
-		writeError(w, r, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Invalid email address", nil)
-		return
-	}
-
-	// Validate password
-	if len(req.Password) < 8 {
-		writeError(w, r, http.StatusUnprocessableEntity, model.ErrCodeValidationError, "Password must be at least 8 characters", nil)
-		return
-	}
-
-	// Hash password
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to process password", err)
-		return
-	}
-
-	// Extract display name from email (part before @)
-	displayName := strings.Split(req.Email, "@")[0]
-
-	// Create user
-	user, err := repository.CreateUserByEmail(r.Context(), req.Email, string(hash), displayName)
-	if err != nil {
-		if isUniqueViolation(err) {
-			writeError(w, r, http.StatusConflict, model.ErrCodeConflict, "Email already registered", err)
-			return
-		}
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create user", err)
-		return
-	}
-
-	// Create JWT and set cookie
-	jwtToken, err := h.createJWT(user)
-	if err != nil {
-		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to create JWT", err)
-		return
-	}
-
-	h.setJWTCookie(w, jwtToken)
-
-	writeJSON(w, http.StatusCreated, user)
+	writeError(w, r, http.StatusGone, model.ErrCodeRegistrationMoved, message, nil)
 }
 
 // Login handles email + password login.

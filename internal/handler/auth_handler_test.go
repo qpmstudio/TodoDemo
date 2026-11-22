@@ -317,99 +317,54 @@ func TestWriteError(t *testing.T) {
 	}
 }
 
-func TestRegister_InvalidEmail(t *testing.T) {
+func TestRegister_Retired(t *testing.T) {
 	cfg := testConfig()
+	cfg.ZitadelRegisterURL = "https://auth.example.com/ui/v2/login/register"
 	h := NewAuthHandler(cfg)
 
-	tests := []struct {
-		name  string
-		email string
-	}{
-		{"missing @", "notanemail"},
-		{"empty", ""},
-		{"no domain", "user@"},
-		{"no user", "@domain.com"},
-		{"with spaces", "user @domain.com"},
+	bodies := []string{
+		`{"email":"user@example.com","password":"password123"}`,
+		`{"email":"notanemail","password":"password123"}`,
+		`{"email":"user@example.com","password":"short"}`,
+		`not json`,
 	}
+	for _, body := range bodies {
+		req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body := `{"email":"` + tt.email + `","password":"password123"}`
-			req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			rec := httptest.NewRecorder()
+		h.Register(rec, req)
 
-			h.Register(rec, req)
-
-			resp := rec.Result()
-			if resp.StatusCode != http.StatusUnprocessableEntity {
-				t.Errorf("expected 422, got %d", resp.StatusCode)
+		resp := rec.Result()
+		if resp.StatusCode != http.StatusGone {
+			t.Errorf("body %q: expected 410, got %d", body, resp.StatusCode)
+		}
+		if got := errorCode(t, rec); got != model.ErrCodeRegistrationMoved {
+			t.Errorf("body %q: code = %q, want %q", body, got, model.ErrCodeRegistrationMoved)
+		}
+		if !strings.Contains(rec.Body.String(), cfg.ZitadelRegisterURL) {
+			t.Errorf("body %q: response should point at the ZITADEL register page: %s", body, rec.Body.String())
+		}
+		for _, c := range resp.Cookies() {
+			if c.Name == "jwt" && c.Value != "" {
+				t.Errorf("body %q: retired register must not set a jwt cookie", body)
 			}
-
-			var apiResp model.APIResponse
-			json.NewDecoder(resp.Body).Decode(&apiResp)
-			if apiResp.Error == nil {
-				t.Fatal("expected error response")
-			}
-			if apiResp.Error.Code != model.ErrCodeValidationError {
-				t.Errorf("expected VALIDATION_ERROR, got %s", apiResp.Error.Code)
-			}
-		})
+		}
 	}
 }
 
-func TestRegister_ShortPassword(t *testing.T) {
-	cfg := testConfig()
-	h := NewAuthHandler(cfg)
+func TestRegister_RetiredWithoutZitadel(t *testing.T) {
+	h := NewAuthHandler(testConfig())
 
-	tests := []struct {
-		name     string
-		password string
-	}{
-		{"empty password", ""},
-		{"1 char", "a"},
-		{"7 chars", "1234567"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body := `{"email":"user@example.com","password":"` + tt.password + `"}`
-			req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			rec := httptest.NewRecorder()
-
-			h.Register(rec, req)
-
-			resp := rec.Result()
-			if resp.StatusCode != http.StatusUnprocessableEntity {
-				t.Errorf("expected 422, got %d", resp.StatusCode)
-			}
-
-			var apiResp model.APIResponse
-			json.NewDecoder(resp.Body).Decode(&apiResp)
-			if apiResp.Error == nil {
-				t.Fatal("expected error response")
-			}
-			if apiResp.Error.Code != model.ErrCodeValidationError {
-				t.Errorf("expected VALIDATION_ERROR, got %s", apiResp.Error.Code)
-			}
-		})
-	}
-}
-
-func TestRegister_InvalidJSON(t *testing.T) {
-	cfg := testConfig()
-	h := NewAuthHandler(cfg)
-
-	req := httptest.NewRequest("POST", "/auth/register", strings.NewReader("not json"))
-	req.Header.Set("Content-Type", "application/json")
+	req := httptest.NewRequest("POST", "/auth/register", strings.NewReader(`{"email":"user@example.com","password":"password123"}`))
 	rec := httptest.NewRecorder()
-
 	h.Register(rec, req)
 
-	resp := rec.Result()
-	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Errorf("expected 422, got %d", resp.StatusCode)
+	if rec.Code != http.StatusGone {
+		t.Fatalf("status = %d, want 410", rec.Code)
+	}
+	if got := errorCode(t, rec); got != model.ErrCodeRegistrationMoved {
+		t.Errorf("code = %q, want %q", got, model.ErrCodeRegistrationMoved)
 	}
 }
 
@@ -430,10 +385,6 @@ func TestLogin_InvalidJSON(t *testing.T) {
 }
 
 func TestLogin_NonexistentUser(t *testing.T) {
-	t.Skip("requires database connection")
-}
-
-func TestRegister_Success(t *testing.T) {
 	t.Skip("requires database connection")
 }
 
