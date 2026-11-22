@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -119,5 +122,88 @@ func TestLoadMissingJWTSecret(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Error("expected error for missing JWT_SECRET")
+	}
+}
+
+func TestWarnDeploymentConfig(t *testing.T) {
+	publicURL := "https://todo.qpmstudio.dpdns.org"
+	configured := Config{
+		GitHubClientID:     "client-id",
+		GitHubClientSecret: "client-secret",
+		FrontendURL:        publicURL,
+		GitHubRedirectURL:  publicURL + "/auth/github/callback",
+	}
+
+	tests := []struct {
+		name       string
+		cfg        Config
+		wantLogs   []string
+		wantSilent bool
+	}{
+		{
+			name:       "public config with oauth set is silent",
+			cfg:        configured,
+			wantSilent: true,
+		},
+		{
+			name: "missing oauth credentials warn",
+			cfg: Config{
+				FrontendURL:       publicURL,
+				GitHubRedirectURL: publicURL + "/auth/github/callback",
+			},
+			wantLogs: []string{"OAuth app not configured", "503"},
+		},
+		{
+			name: "localhost urls warn",
+			cfg: Config{
+				GitHubClientID:     "client-id",
+				GitHubClientSecret: "client-secret",
+				FrontendURL:        "http://localhost:5173",
+				GitHubRedirectURL:  "http://127.0.0.1:8080/auth/github/callback",
+			},
+			wantLogs: []string{"localhost", "FRONTEND_URL", "GITHUB_REDIRECT_URL"},
+		},
+		{
+			name: "ipv6 loopback warns",
+			cfg: Config{
+				GitHubClientID:     "client-id",
+				GitHubClientSecret: "client-secret",
+				FrontendURL:        publicURL,
+				GitHubRedirectURL:  "http://[::1]:8080/auth/github/callback",
+			},
+			wantLogs: []string{"localhost", "GITHUB_REDIRECT_URL"},
+		},
+		{
+			name: "invalid url warns",
+			cfg: Config{
+				GitHubClientID:     "client-id",
+				GitHubClientSecret: "client-secret",
+				FrontendURL:        "://not-a-url",
+				GitHubRedirectURL:  publicURL + "/auth/github/callback",
+			},
+			wantLogs: []string{"not a valid URL", "FRONTEND_URL"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+			tt.cfg.WarnDeploymentConfig(logger)
+
+			got := logs.String()
+			if tt.wantSilent {
+				if got != "" {
+					t.Errorf("expected no warnings, got %q", got)
+				}
+				return
+			}
+			for _, want := range tt.wantLogs {
+				if !strings.Contains(got, want) {
+					t.Errorf("expected log to contain %q, got %q", want, got)
+				}
+			}
+		})
 	}
 }

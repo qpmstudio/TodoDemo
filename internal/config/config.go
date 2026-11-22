@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
+	"net/url"
 	"os"
+	"strings"
 )
 
 // Config holds all configuration for the application.
@@ -46,4 +49,40 @@ func getEnv(key, fallback string) string {
 		return val
 	}
 	return fallback
+}
+
+// WarnDeploymentConfig logs the settings that work for local development but
+// break a public deployment. It never fails the process: those defaults are
+// intentional for local development.
+func (c *Config) WarnDeploymentConfig(logger *slog.Logger) {
+	if c.GitHubClientID == "" || c.GitHubClientSecret == "" {
+		logger.Warn("GitHub OAuth app not configured; /auth/github/login will return 503",
+			"hint", "set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET",
+			"client_id_set", c.GitHubClientID != "",
+			"client_secret_set", c.GitHubClientSecret != "",
+		)
+	}
+
+	warnLocalhostURL(logger, "FRONTEND_URL", c.FrontendURL)
+	warnLocalhostURL(logger, "GITHUB_REDIRECT_URL", c.GitHubRedirectURL)
+}
+
+// warnLocalhostURL warns when a configured URL is loopback or not absolute.
+func warnLocalhostURL(logger *slog.Logger, name, raw string) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		logger.Warn("config value is not a valid URL; a public deployment needs an absolute URL",
+			"env", name,
+			"value", raw,
+		)
+		return
+	}
+
+	switch strings.ToLower(u.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		logger.Warn("config still points at localhost; a public deployment needs a public URL",
+			"env", name,
+			"value", raw,
+		)
+	}
 }
