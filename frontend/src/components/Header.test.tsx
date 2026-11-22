@@ -50,6 +50,42 @@ describe('Header', () => {
     expect(screen.getByText('Logout')).toBeInTheDocument();
   });
 
+
+  it('hides the avatar when avatar_url is empty', () => {
+    renderWithAuth({
+      id: '1',
+      avatar_url: '',
+      display_name: 'Test User',
+      created_at: '',
+      updated_at: '',
+    });
+    expect(document.querySelector('.header__avatar')).toBeNull();
+  });
+
+  it('ignores a relative avatar URL', () => {
+    renderWithAuth({
+      id: '1',
+      avatar_url: '/assets/avatar.png',
+      display_name: 'Test User',
+      created_at: '',
+      updated_at: '',
+    });
+    expect(document.querySelector('.header__avatar')).toBeNull();
+  });
+
+  it('renders an absolute avatar URL', () => {
+    renderWithAuth({
+      id: '1',
+      avatar_url: 'https://example.com/avatar.png',
+      display_name: 'Test User',
+      created_at: '',
+      updated_at: '',
+    });
+    const img = document.querySelector('.header__avatar') as HTMLImageElement;
+    expect(img).not.toBeNull();
+    expect(img.src).toBe('https://example.com/avatar.png');
+  });
+
   it('calls logout on button click', async () => {
     const logoutMock = vi.fn();
     renderWithAuth({

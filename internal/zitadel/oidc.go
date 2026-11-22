@@ -211,6 +211,7 @@ type Claims struct {
 	EmailVerified     bool   `json:"email_verified"`
 	PreferredUsername string `json:"preferred_username"`
 	Name              string `json:"name"`
+	Picture           string `json:"picture"`
 	Nonce             string `json:"nonce"`
 	Azp               string `json:"azp"`
 }

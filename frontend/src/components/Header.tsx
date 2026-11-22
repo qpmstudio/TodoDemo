@@ -2,6 +2,10 @@ import { useAuth } from '../context/AuthContext';
 
 export function Header() {
   const { user, logout } = useAuth();
+  // Only absolute http(s) URLs are safe to use as an <img> source; relative or
+  // empty values would render a broken image for local accounts.
+  const avatarURL =
+    user?.avatar_url && /^https?:\/\//i.test(user.avatar_url) ? user.avatar_url : '';
 
   return (
     <header className="header">
@@ -9,9 +13,9 @@ export function Header() {
       <div className="header__user">
         {user && (
           <>
-            {user.avatar_url && (
+            {avatarURL && (
               <img
-                src={user.avatar_url}
+                src={avatarURL}
                 alt={user.display_name}
                 className="header__avatar"
               />
