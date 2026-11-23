@@ -33,22 +33,27 @@ const (
 // a fake; production uses repositoryUserStore.
 type zitadelUserStore interface {
 	GetUserByZitadelSub(ctx context.Context, sub string) (*model.User, error)
-	UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string) (*model.User, error)
-	ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName string) (*model.User, int, error)
+	UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName, avatarURL string) (*model.User, error)
+	ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName, avatarURL string) (*model.User, int, error)
+	UpdateUserAvatar(ctx context.Context, userID, avatarURL string) error
 }
 
 type repositoryUserStore struct{}
 
-func (repositoryUserStore) UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string) (*model.User, error) {
-	return repository.UpsertUserByZitadelSub(ctx, sub, email, displayName)
+func (repositoryUserStore) UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName, avatarURL string) (*model.User, error) {
+	return repository.UpsertUserByZitadelSub(ctx, sub, email, displayName, avatarURL)
 }
 
 func (repositoryUserStore) GetUserByZitadelSub(ctx context.Context, sub string) (*model.User, error) {
 	return repository.GetUserByZitadelSub(ctx, sub)
 }
 
-func (repositoryUserStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName string) (*model.User, int, error) {
-	return repository.ClaimUnlinkedUserByEmail(ctx, sub, email, displayName)
+func (repositoryUserStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName, avatarURL string) (*model.User, int, error) {
+	return repository.ClaimUnlinkedUserByEmail(ctx, sub, email, displayName, avatarURL)
+}
+
+func (repositoryUserStore) UpdateUserAvatar(ctx context.Context, userID, avatarURL string) error {
+	return repository.UpdateUserAvatar(ctx, userID, avatarURL)
 }
 
 // oidcClient is the protocol surface used by the handler.
@@ -61,8 +66,8 @@ type oidcClient interface {
 	EndSessionURL(idTokenHint, postLogoutRedirect string) string
 }
 
-// ZitadelHandler implements the authorization-code + PKCE login. The resulting
-// session is TODO's own JWT cookie, exactly like GitHub and password logins.
+// ZitadelHandler implements the authorization-code + PKCE login. ZITADEL is
+// the only identity provider; the resulting session is TodoDemo's own JWT cookie.
 type ZitadelHandler struct {
 	cfg   *config.Config
 	oidc  oidcClient
@@ -193,11 +198,19 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := h.oidc.VerifyIDToken(r.Context(), token.IDToken, state.Nonce)
 	if err != nil {
+		if errors.Is(err, zitadel.ErrUpstream) {
+			// The signing keys could not be fetched: ZITADEL, not the user's
+			// id_token, is the failing side.
+			writeError(w, r, http.StatusBadGateway, model.ErrCodeUpstreamUnavailable,
+				"ZITADEL signing keys unavailable", err)
+			return
+		}
 		writeError(w, r, http.StatusUnauthorized, model.ErrCodeOAuthIDTokenInvalid, "Invalid ZITADEL id_token", err)
 		return
 	}
 
 	email, name, username := zitadelProfileParts(claims)
+	picture := claims.Picture
 	verified := claims.EmailVerified
 	if !verified || email == "" || name == "" {
 		// ZITADEL may omit profile/email from the id_token when an access token
@@ -208,6 +221,9 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 				"zitadel userinfo unavailable; continuing with id_token claims", "error", infoErr)
 		} else {
 			infoEmail, infoName, infoUsername := zitadelProfileParts(info)
+			if picture == "" {
+				picture = info.Picture
+			}
 			if info.EmailVerified && infoEmail != "" {
 				verified = true
 				if email == "" {
@@ -268,13 +284,14 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	displayName := zitadelDisplayName(name, username, email)
+	avatarURL := normalizeAvatarURL(picture)
 	user, err := h.store.GetUserByZitadelSub(r.Context(), claims.Subject)
 	if err != nil {
 		writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to load user", err)
 		return
 	}
 	if user == nil {
-		user, err = h.adoptOrCreateUser(r, claims.Subject, email, displayName)
+		user, err = h.adoptOrCreateUser(r, claims.Subject, email, displayName, avatarURL)
 		if err != nil {
 			var conflict *accountConflictError
 			if errors.As(err, &conflict) {
@@ -283,6 +300,17 @@ func (h *ZitadelHandler) Callback(w http.ResponseWriter, r *http.Request) {
 			}
 			writeError(w, r, http.StatusInternalServerError, model.ErrCodeInternalError, "Failed to save user", err)
 			return
+		}
+	}
+
+	// Existing ZITADEL users get a newly uploaded/updated picture on the next
+	// login; a failed avatar refresh must not block the session.
+	if avatarURL != "" && user.AvatarURL != avatarURL {
+		if err := h.store.UpdateUserAvatar(r.Context(), user.ID, avatarURL); err != nil {
+			logging.FromContext(r.Context()).WarnContext(r.Context(),
+				"failed to refresh zitadel avatar", "user_id", user.ID, "error", err)
+		} else {
+			user.AvatarURL = avatarURL
 		}
 	}
 
@@ -310,9 +338,9 @@ func (e *accountConflictError) Error() string { return e.message }
 // adopted when exactly one unlinked row carries the verified email; an
 // ambiguous email is refused instead of silently creating yet another row, and
 // only a proven absence of a legacy row falls through to a fresh insert.
-func (h *ZitadelHandler) adoptOrCreateUser(r *http.Request, sub, email, displayName string) (*model.User, error) {
+func (h *ZitadelHandler) adoptOrCreateUser(r *http.Request, sub, email, displayName, avatarURL string) (*model.User, error) {
 	ctx := r.Context()
-	claimed, matches, err := h.store.ClaimUnlinkedUserByEmail(ctx, sub, email, displayName)
+	claimed, matches, err := h.store.ClaimUnlinkedUserByEmail(ctx, sub, email, displayName, avatarURL)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +354,7 @@ func (h *ZitadelHandler) adoptOrCreateUser(r *http.Request, sub, email, displayN
 			"zitadel login adopted an unlinked local account", "user_id", claimed.ID)
 		return claimed, nil
 	}
-	user, err := h.store.UpsertUserByZitadelSub(ctx, sub, email, displayName)
+	user, err := h.store.UpsertUserByZitadelSub(ctx, sub, email, displayName, avatarURL)
 	if err != nil {
 		if errors.Is(err, repository.ErrEmailConflict) {
 			return nil, &accountConflictError{message: "This email already belongs to another account; sign in with that method instead"}
@@ -507,6 +535,24 @@ func zitadelProfileParts(claims *zitadel.Claims) (email, name, username string) 
 	name = claims.Name
 	username = claims.PreferredUsername
 	return email, name, username
+}
+
+// normalizeAvatarURL only accepts an absolute http(s) URL. ZITADEL may return
+// relative paths; rendering those as an <img> src would produce a broken image,
+// so they are treated as "no avatar".
+func normalizeAvatarURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+	return parsed.String()
 }
 
 func zitadelDisplayName(name, username, email string) string {

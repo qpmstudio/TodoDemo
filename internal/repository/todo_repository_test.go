@@ -2,13 +2,16 @@ package repository
 
 import (
 	"errors"
+	"fmt"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/DevenWen/TodoDemo/internal/model"
 )
 
 func TestIsNotFoundError(t *testing.T) {
-	err := &notFoundError{}
+	err := ErrNotFound
 	if !IsNotFoundError(err) {
 		t.Error("expected IsNotFoundError to return true")
 	}
@@ -23,8 +26,29 @@ func TestIsNotFoundError(t *testing.T) {
 	}
 }
 
+func TestIsNotFoundError_Wrapped(t *testing.T) {
+	wrapped := fmt.Errorf("load todo: %w", ErrNotFound)
+	if !IsNotFoundError(wrapped) {
+		t.Error("expected IsNotFoundError to see through wrapped errors")
+	}
+}
+
+func TestNormalizeTodoError(t *testing.T) {
+	if err := normalizeTodoError(pgx.ErrNoRows); !IsNotFoundError(err) {
+		t.Errorf("expected pgx.ErrNoRows to become ErrNotFound, got %v", err)
+	}
+	if err := normalizeTodoError(fmt.Errorf("query: %w", pgx.ErrNoRows)); !IsNotFoundError(err) {
+		t.Errorf("expected wrapped pgx.ErrNoRows to become ErrNotFound, got %v", err)
+	}
+
+	dbErr := errors.New("connection refused")
+	if err := normalizeTodoError(dbErr); !errors.Is(err, dbErr) || IsNotFoundError(err) {
+		t.Errorf("expected other errors to pass through, got %v", err)
+	}
+}
+
 func TestNotFoundError_Message(t *testing.T) {
-	err := &notFoundError{}
+	err := ErrNotFound
 	if err.Error() != "todo not found" {
 		t.Errorf("expected 'todo not found', got '%s'", err.Error())
 	}

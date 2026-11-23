@@ -2,8 +2,11 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/DevenWen/TodoDemo/internal/database"
 	"github.com/DevenWen/TodoDemo/internal/model"
@@ -23,8 +26,10 @@ func ListTodos(ctx context.Context, filter TodoFilter) ([]model.Todo, int, error
 	if filter.Page < 1 {
 		filter.Page = 1
 	}
-	if filter.PerPage < 1 || filter.PerPage > 100 {
+	if filter.PerPage < 1 {
 		filter.PerPage = 20
+	} else if filter.PerPage > 100 {
+		filter.PerPage = 100
 	}
 
 	offset := (filter.Page - 1) * filter.PerPage
@@ -106,7 +111,7 @@ func GetTodoByID(ctx context.Context, id string, userID string) (*model.Todo, er
 		id, userID,
 	).Scan(&todo.ID, &todo.Title, &todo.Description, &todo.Completed, &todo.CompletedAt, &todo.CreatedAt, &todo.UpdatedAt)
 	if err != nil {
-		return nil, err
+		return nil, normalizeTodoError(err)
 	}
 	return todo, nil
 }
@@ -145,7 +150,7 @@ func UpdateTodo(ctx context.Context, id string, userID string, req model.UpdateT
 		todo.Title, todo.Description, todo.Completed, todo.CompletedAt, todo.UpdatedAt, id, userID,
 	).Scan(&todo.ID, &todo.Title, &todo.Description, &todo.Completed, &todo.CompletedAt, &todo.CreatedAt, &todo.UpdatedAt)
 
-	return todo, err
+	return todo, normalizeTodoError(err)
 }
 
 // SoftDeleteTodo sets deleted_at on a todo.
@@ -159,22 +164,35 @@ func SoftDeleteTodo(ctx context.Context, id string, userID string) error {
 	}
 
 	if result.RowsAffected() == 0 {
-		return errNotFound
+		return ErrNotFound
 	}
 
 	return nil
 }
 
-var errNotFound = &notFoundError{}
+// ErrNotFound is returned when a todo does not exist for the user.
+var ErrNotFound error = &notFoundError{}
 
 type notFoundError struct{}
 
 func (e *notFoundError) Error() string { return "todo not found" }
 
-// IsNotFoundError checks if the error is a not-found error.
+// normalizeTodoError maps pgx's no-rows result to ErrNotFound so handlers can
+// answer 404 instead of 500. Any other database error is returned unchanged.
+func normalizeTodoError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
+}
+
+// IsNotFoundError reports whether err is or wraps ErrNotFound.
 func IsNotFoundError(err error) bool {
-	_, ok := err.(*notFoundError)
-	return ok
+	var target *notFoundError
+	return errors.As(err, &target)
 }
 
 func itoa(i int) string {

@@ -44,7 +44,7 @@ func newFakeZitadelStore() *fakeZitadelStore {
 	return &fakeZitadelStore{users: map[string]*model.User{}}
 }
 
-func (f *fakeZitadelStore) UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string) (*model.User, error) {
+func (f *fakeZitadelStore) UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName, avatarURL string) (*model.User, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
@@ -58,12 +58,16 @@ func (f *fakeZitadelStore) UpsertUserByZitadelSub(ctx context.Context, sub, emai
 		if displayName != "" {
 			user.DisplayName = displayName
 		}
+		if avatarURL != "" {
+			user.AvatarURL = avatarURL
+		}
 		return user, nil
 	}
 	user := &model.User{
 		ID:           "local-" + sub,
 		Email:        email,
 		DisplayName:  displayName,
+		AvatarURL:    avatarURL,
 		AuthProvider: "zitadel",
 	}
 	f.users[sub] = user
@@ -76,7 +80,7 @@ func (f *fakeZitadelStore) GetUserByZitadelSub(ctx context.Context, sub string) 
 	return f.users[sub], nil
 }
 
-func (f *fakeZitadelStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName string) (*model.User, int, error) {
+func (f *fakeZitadelStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName, avatarURL string) (*model.User, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.claimCalls++
@@ -89,7 +93,22 @@ func (f *fakeZitadelStore) ClaimUnlinkedUserByEmail(ctx context.Context, sub, em
 	if f.claimUser == nil {
 		return nil, f.claimMatches, nil
 	}
+	if avatarURL != "" {
+		f.claimUser.AvatarURL = avatarURL
+	}
 	return f.claimUser, 1, nil
+}
+
+func (f *fakeZitadelStore) UpdateUserAvatar(ctx context.Context, userID, avatarURL string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, user := range f.users {
+		if user.ID == userID {
+			user.AvatarURL = avatarURL
+			return nil
+		}
+	}
+	return nil
 }
 
 func (f *fakeZitadelStore) savedUsers() int {
@@ -120,10 +139,14 @@ type fakeZitadel struct {
 	emailVerified    bool
 	omitProfile      bool
 	tokenStatus      int
+	tokenBody        string
+	jwksStatus       int
 	wrongKey         bool
 	tokenCalls       int
+	picture          string
 	userInfoEmail    string
 	userInfoName     string
+	userInfoPicture  string
 	userInfoVerified bool
 	userInfoCalled   int
 	resendStatus     int
@@ -162,6 +185,14 @@ func newFakeZitadel(t *testing.T) *fakeZitadel {
 }
 
 func (f *fakeZitadel) handleJWKS(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	status := f.jwksStatus
+	f.mu.Unlock()
+	if status != 0 && status != http.StatusOK {
+		w.WriteHeader(status)
+		fmt.Fprint(w, `{"error":"keys unavailable"}`)
+		return
+	}
 	pub := f.key.PublicKey
 	body := map[string]any{"keys": []map[string]string{{
 		"kty": "RSA",
@@ -183,7 +214,11 @@ func (f *fakeZitadel) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	if f.tokenStatus != 0 && f.tokenStatus != http.StatusOK {
 		w.WriteHeader(f.tokenStatus)
-		fmt.Fprint(w, `{"error":"server_error"}`)
+		body := f.tokenBody
+		if body == "" {
+			body = `{"error":"server_error"}`
+		}
+		fmt.Fprint(w, body)
 		return
 	}
 	if r.PostForm.Get("code") != "good-code" {
@@ -210,6 +245,7 @@ func (f *fakeZitadel) handleToken(w http.ResponseWriter, r *http.Request) {
 		Email:             f.email,
 		EmailVerified:     f.emailVerified,
 		Name:              f.name,
+		Picture:           f.picture,
 		PreferredUsername: "zuser",
 	}
 	if f.omitProfile {
@@ -253,6 +289,7 @@ func (f *fakeZitadel) handleUserInfo(w http.ResponseWriter, r *http.Request) {
 		"email":          f.userInfoEmail,
 		"email_verified": f.userInfoVerified,
 		"name":           f.userInfoName,
+		"picture":        f.userInfoPicture,
 	})
 }
 
@@ -290,8 +327,12 @@ func (f *fakeZitadel) setNonce(nonce string) {
 
 func (f *fakeZitadel) setResendStatus(status int)   { f.resendStatus = status }
 func (f *fakeZitadel) setTokenStatus(status int)    { f.tokenStatus = status }
+func (f *fakeZitadel) setTokenBody(body string)     { f.tokenBody = body }
+func (f *fakeZitadel) setJWKSStatus(status int)     { f.jwksStatus = status }
 func (f *fakeZitadel) setExpiresIn(d time.Duration) { f.expiresIn = d }
 func (f *fakeZitadel) setWrongKey(wrong bool)       { f.wrongKey = wrong }
+func (f *fakeZitadel) setPicture(picture string)    { f.picture = picture }
+func (f *fakeZitadel) setUserInfoPicture(p string)  { f.userInfoPicture = p }
 
 func zitadelConfigFor(f *fakeZitadel) *config.Config {
 	return &config.Config{
@@ -473,6 +514,52 @@ func TestZitadelCallbackCreatesThenReusesUser(t *testing.T) {
 	}
 }
 
+func TestZitadelCallbackAvatar(t *testing.T) {
+	cases := []struct {
+		name            string
+		picture         string
+		userInfoPicture string
+		omitProfile     bool
+		want            string
+	}{
+		{"absolute URL", "https://cdn.example.com/avatar.png", "", false, "https://cdn.example.com/avatar.png"},
+		{"relative path is ignored", "/assets/avatar.png", "", false, ""},
+		{"empty picture", "", "", false, ""},
+		{"userinfo fallback", "", "https://cdn.example.com/from-userinfo.png", true, "https://cdn.example.com/from-userinfo.png"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeZitadel(t)
+			h, store := newTestZitadelHandler(t, f)
+			login := doZitadelLogin(t, h, "/auth/zitadel/login")
+			f.setNonce(login.query.Get("nonce"))
+			f.setPicture(tt.picture)
+			f.setUserInfoPicture(tt.userInfoPicture)
+			if tt.omitProfile {
+				f.mu.Lock()
+				f.omitProfile = true
+				f.userInfoEmail = "zitadel@example.com"
+				f.userInfoName = "ZITADEL User"
+				f.mu.Unlock()
+			}
+
+			rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+			if rec.Code != http.StatusFound {
+				t.Fatalf("callback status = %d, body %s", rec.Code, rec.Body.String())
+			}
+			store.mu.Lock()
+			user := store.users["zitadel-sub-1"]
+			store.mu.Unlock()
+			if user == nil {
+				t.Fatal("user was not stored")
+			}
+			if user.AvatarURL != tt.want {
+				t.Errorf("avatar_url = %q, want %q", user.AvatarURL, tt.want)
+			}
+		})
+	}
+}
+
 func TestZitadelCallbackStateErrors(t *testing.T) {
 	f := newFakeZitadel(t)
 	h, _ := newTestZitadelHandler(t, f)
@@ -524,17 +611,53 @@ func TestZitadelCallbackTokenErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("upstream 500", func(t *testing.T) {
-		f := newFakeZitadel(t)
-		h, _ := newTestZitadelHandler(t, f)
-		login := doZitadelLogin(t, h, "/auth/zitadel/login")
-		f.setTokenStatus(http.StatusInternalServerError)
+	upstreamCases := []struct {
+		name       string
+		status     int
+		body       string
+		wantStatus int
+		wantCode   string
+	}{
+		{"upstream 500", http.StatusInternalServerError, `{"error":"server_error"}`, http.StatusBadGateway, model.ErrCodeUpstreamUnavailable},
+		{"invalid client", http.StatusUnauthorized, `{"error":"invalid_client","error_description":"client authentication failed"}`, http.StatusBadGateway, model.ErrCodeUpstreamUnavailable},
+		{"rate limited", http.StatusTooManyRequests, `{"error":"rate_limit","error_description":"too many requests"}`, http.StatusBadGateway, model.ErrCodeUpstreamUnavailable},
+	}
+	for _, tt := range upstreamCases {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFakeZitadel(t)
+			h, _ := newTestZitadelHandler(t, f)
+			login := doZitadelLogin(t, h, "/auth/zitadel/login")
+			f.setTokenStatus(tt.status)
+			f.setTokenBody(tt.body)
 
-		rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
-		if rec.Code != http.StatusBadGateway || errorCode(t, rec) != model.ErrCodeUpstreamUnavailable {
-			t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
-		}
-	})
+			rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+			if rec.Code != tt.wantStatus || errorCode(t, rec) != tt.wantCode {
+				t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
+			}
+			// The browser must never see the upstream error text.
+			if strings.Contains(rec.Body.String(), "invalid_client") ||
+				strings.Contains(rec.Body.String(), "client authentication failed") ||
+				strings.Contains(rec.Body.String(), "rate_limit") {
+				t.Fatalf("response leaked upstream error: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestZitadelCallbackJWKSUnavailable(t *testing.T) {
+	f := newFakeZitadel(t)
+	h, _ := newTestZitadelHandler(t, f)
+	login := doZitadelLogin(t, h, "/auth/zitadel/login")
+	f.setNonce(login.query.Get("nonce"))
+	f.setJWKSStatus(http.StatusServiceUnavailable)
+
+	rec := doZitadelCallback(t, h, "good-code", login.query.Get("state"), login.cookie)
+	if rec.Code != http.StatusBadGateway || errorCode(t, rec) != model.ErrCodeUpstreamUnavailable {
+		t.Fatalf("status = %d, code = %q", rec.Code, errorCode(t, rec))
+	}
+	if strings.Contains(rec.Body.String(), "jwks") {
+		t.Fatalf("response leaked upstream error: %s", rec.Body.String())
+	}
 }
 
 func TestZitadelCallbackIDTokenErrors(t *testing.T) {

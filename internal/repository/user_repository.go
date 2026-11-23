@@ -20,35 +20,36 @@ var ErrEmailConflict = errors.New("repository: email already registered")
 // ZITADEL subject. The subject is the identity key: email is only profile data,
 // so a verified email that already belongs to another account is a conflict
 // rather than a reason to merge accounts.
-func UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string) (*model.User, error) {
+func UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName, avatarURL string) (*model.User, error) {
 	now := time.Now()
 	user := &model.User{
 		ZitadelSub:   &sub,
 		Email:        email,
 		DisplayName:  displayName,
+		AvatarURL:    avatarURL,
 		AuthProvider: "zitadel",
 	}
 
-	var emailArg *string
-	if email != "" {
-		emailArg = &email
-	}
+	emailArg := nullIfEmpty(email)
+	avatarArg := nullIfEmpty(avatarURL)
 
 	err := database.Pool.QueryRow(ctx,
-		`INSERT INTO users (zitadel_sub, email, display_name, auth_provider, created_at, updated_at)
-		 VALUES ($1, $2, $3, 'zitadel', $4, $5)
+		`INSERT INTO users (zitadel_sub, email, display_name, auth_provider, avatar_url, created_at, updated_at)
+		 VALUES ($1, $2, $3, 'zitadel', $4, $5, $6)
 		 ON CONFLICT (zitadel_sub) WHERE zitadel_sub IS NOT NULL
 		 DO UPDATE SET
 		   email = COALESCE(EXCLUDED.email, users.email),
 		   display_name = COALESCE(NULLIF(EXCLUDED.display_name, ''), users.display_name),
+		   avatar_url = COALESCE(NULLIF(EXCLUDED.avatar_url, ''), users.avatar_url),
 		   updated_at = EXCLUDED.updated_at
-		 RETURNING id, zitadel_sub, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(auth_provider, ''), created_at, updated_at`,
+		 RETURNING id, zitadel_sub, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(avatar_url, ''), COALESCE(auth_provider, ''), created_at, updated_at`,
 		sub,
 		emailArg,
 		displayName,
+		avatarArg,
 		now,
 		now,
-	).Scan(&user.ID, &user.ZitadelSub, &user.Email, &user.DisplayName, &user.AuthProvider, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.ZitadelSub, &user.Email, &user.DisplayName, &user.AvatarURL, &user.AuthProvider, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_users_email" {
@@ -64,9 +65,9 @@ func UpsertUserByZitadelSub(ctx context.Context, sub, email, displayName string)
 func GetUserByZitadelSub(ctx context.Context, sub string) (*model.User, error) {
 	user := &model.User{}
 	err := database.Pool.QueryRow(ctx,
-		`SELECT id, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(auth_provider, '')
+		`SELECT id, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(avatar_url, ''), COALESCE(auth_provider, '')
 		   FROM users WHERE zitadel_sub = $1`, sub,
-	).Scan(&user.ID, &user.Email, &user.DisplayName, &user.AuthProvider)
+	).Scan(&user.ID, &user.Email, &user.DisplayName, &user.AvatarURL, &user.AuthProvider)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -88,7 +89,7 @@ func GetUserByZitadelSub(ctx context.Context, sub string) (*model.User, error) {
 // none, so two rows with the same email coexist silently. The lookup therefore
 // happens up front. Only an unambiguous single unlinked row is adopted, and the
 // count is returned so the caller can report ambiguity instead of guessing.
-func ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName string) (*model.User, int, error) {
+func ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName, avatarURL string) (*model.User, int, error) {
 	if email == "" {
 		return nil, 0, nil
 	}
@@ -128,11 +129,12 @@ func ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName strin
 		    SET zitadel_sub = $1,
 		        auth_provider = 'zitadel',
 		        display_name = COALESCE(NULLIF($2, ''), display_name),
-		        updated_at = $3
-		  WHERE id = $4
-		  RETURNING id, zitadel_sub, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(auth_provider, ''), created_at, updated_at`,
-		sub, displayName, time.Now(), ids[0],
-	).Scan(&user.ID, &user.ZitadelSub, &user.Email, &user.DisplayName, &user.AuthProvider, &user.CreatedAt, &user.UpdatedAt)
+		        avatar_url = COALESCE(NULLIF($3, ''), avatar_url),
+		        updated_at = $4
+		  WHERE id = $5
+		  RETURNING id, zitadel_sub, COALESCE(email, ''), COALESCE(display_name, ''), COALESCE(avatar_url, ''), COALESCE(auth_provider, ''), created_at, updated_at`,
+		sub, displayName, avatarURL, time.Now(), ids[0],
+	).Scan(&user.ID, &user.ZitadelSub, &user.Email, &user.DisplayName, &user.AvatarURL, &user.AuthProvider, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, 1, err
 	}
@@ -146,11 +148,30 @@ func ClaimUnlinkedUserByEmail(ctx context.Context, sub, email, displayName strin
 func GetUserByID(ctx context.Context, id string) (*model.User, error) {
 	user := &model.User{}
 	err := database.Pool.QueryRow(ctx,
-		`SELECT id, github_id, COALESCE(github_login, ''), COALESCE(github_avatar_url, ''), COALESCE(email, ''), zitadel_sub, COALESCE(auth_provider, ''), display_name, created_at, updated_at
+		`SELECT id, COALESCE(email, ''), zitadel_sub, COALESCE(auth_provider, ''), display_name, COALESCE(avatar_url, ''), created_at, updated_at
 		 FROM users WHERE id = $1`, id,
-	).Scan(&user.ID, &user.GitHubID, &user.GitHubLogin, &user.GitHubAvatarURL, &user.Email, &user.ZitadelSub, &user.AuthProvider, &user.DisplayName, &user.CreatedAt, &user.UpdatedAt)
+	).Scan(&user.ID, &user.Email, &user.ZitadelSub, &user.AuthProvider, &user.DisplayName, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return user, nil
+}
+
+// UpdateUserAvatar refreshes the cached ZITADEL picture for an existing user.
+// An empty URL never clears a previously stored avatar.
+func UpdateUserAvatar(ctx context.Context, userID, avatarURL string) error {
+	if avatarURL == "" {
+		return nil
+	}
+	_, err := database.Pool.Exec(ctx,
+		`UPDATE users SET avatar_url = $1, updated_at = $2 WHERE id = $3`,
+		avatarURL, time.Now(), userID)
+	return err
+}
+
+func nullIfEmpty(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }

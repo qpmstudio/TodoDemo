@@ -93,8 +93,6 @@ func main() {
 	r.Get("/auth/zitadel/login", zitadelHandler.Login)
 	r.Get("/auth/zitadel/callback", zitadelHandler.Callback)
 	r.Get("/auth/zitadel/logout", zitadelHandler.Logout)
-	r.Post("/auth/register", authHandler.Register)
-	r.Post("/auth/login", authHandler.Login)
 
 	// Which login buttons exist is public information; it never contains client
 	// IDs or secrets. It sits outside the protected group for that reason.

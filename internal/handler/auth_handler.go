@@ -24,29 +24,6 @@ func NewAuthHandler(cfg *config.Config) *AuthHandler {
 	return &AuthHandler{cfg: cfg}
 }
 
-// Register handles the retired email + password registration endpoint.
-// Account creation and email verification now happen in ZITADEL. The route
-// stays registered so old clients get an explicit answer instead of a
-// confusing 404, but it never creates a local user.
-func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
-	message := "Self-service registration is disabled; create your account with ZITADEL"
-	if registerURL := h.cfg.RegisterURL(); registerURL != "" {
-		message = "Self-service registration is disabled; create your account at " + registerURL
-	}
-	writeError(w, r, http.StatusGone, model.ErrCodeRegistrationMoved, message, nil)
-}
-
-// Login handles the retired email + password login endpoint. ZITADEL is the
-// only way in; existing password hashes stay in the database but can no longer
-// start a session.
-func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
-	message := "Email and password sign-in is disabled; sign in with ZITADEL"
-	if verifyURL := h.cfg.VerifyURL(); verifyURL != "" {
-		message = "Email and password sign-in is disabled; sign in with ZITADEL (or open " + verifyURL + ")"
-	}
-	writeError(w, r, http.StatusGone, model.ErrCodeLoginMoved, message, nil)
-}
-
 // setJWTCookie sets the JWT cookie on the response.
 func (h *AuthHandler) setJWTCookie(w http.ResponseWriter, token string) {
 	setJWTCookie(w, token)

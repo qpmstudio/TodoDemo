@@ -45,7 +45,9 @@ const (
 var (
 	// ErrCodeRejected means ZITADEL rejected the authorization code.
 	ErrCodeRejected = errors.New("zitadel: authorization code rejected")
-	// ErrUpstream means ZITADEL was unreachable or answered with 5xx.
+	// ErrUpstream means ZITADEL was unreachable, answered with 5xx, or refused
+	// the client at the token endpoint (401 invalid_client / 429 rate limit).
+	// Those are configuration or capacity failures the user cannot correct.
 	ErrUpstream = errors.New("zitadel: upstream unavailable")
 	// ErrInvalidIDToken covers signature, issuer, audience, time and nonce checks.
 	ErrInvalidIDToken = errors.New("zitadel: invalid id token")
@@ -161,7 +163,9 @@ func (c *Client) Exchange(ctx context.Context, code, codeVerifier string) (*Toke
 		return nil, fmt.Errorf("%w: read token response: %v", ErrUpstream, err)
 	}
 
-	if resp.StatusCode >= http.StatusInternalServerError {
+	if resp.StatusCode >= http.StatusInternalServerError ||
+		resp.StatusCode == http.StatusUnauthorized ||
+		resp.StatusCode == http.StatusTooManyRequests {
 		return nil, fmt.Errorf("%w: token endpoint status %d", ErrUpstream, resp.StatusCode)
 	}
 
@@ -207,6 +211,7 @@ type Claims struct {
 	EmailVerified     bool   `json:"email_verified"`
 	PreferredUsername string `json:"preferred_username"`
 	Name              string `json:"name"`
+	Picture           string `json:"picture"`
 	Nonce             string `json:"nonce"`
 	Azp               string `json:"azp"`
 }
@@ -233,7 +238,10 @@ func (c *Client) VerifyIDToken(ctx context.Context, rawToken, expectedNonce stri
 	claims := &Claims{}
 	token, err := parser.ParseWithClaims(rawToken, claims, c.keyFunc(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidIDToken, err)
+		// Keep both sentinels in the chain: callers still reject the token as
+		// invalid, but a JWKS outage surfaces as ErrUpstream so the handler can
+		// answer 502 instead of blaming the user's id_token.
+		return nil, fmt.Errorf("%w: %w", ErrInvalidIDToken, err)
 	}
 	if !token.Valid {
 		return nil, fmt.Errorf("%w: token is not valid", ErrInvalidIDToken)
